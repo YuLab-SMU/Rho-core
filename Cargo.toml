@@ -1,0 +1,48 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/plugin-protocol",
+  "crates/process-engine",
+  "crates/plugin-sdk",
+  "crates/plugins",
+  "crates/contract",
+  "crates/operation",
+  "crates/adapters/sqlite",
+  "crates/host",
+  "crates/cli",
+  "crates/mcp",
+  "crates/workbench",
+]
+default-members = ["crates/cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "AGPL-3.0-only"
+repository = "https://github.com/YuLab-SMU/Rho"
+
+[workspace.dependencies]
+async-trait = "0.1"
+clap = { version = "4.5", features = ["derive"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+schemars = "1.0"
+sha2 = "0.10"
+tempfile = "3.20"
+thiserror = "2.0"
+tokio = { version = "1.0", features = ["macros", "rt", "sync", "time", "process", "signal", "io-util", "io-std", "fs"] }
+tracing = "0.1"
+uuid = { version = "1.18", features = ["v4"] }
+process-wrap = { version = "10.0", features = ["tokio1"] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+tokio-util = { version = "0.7", features = ["rt", "codec"] }
+rmcp = { version = "1.8", default-features = false, features = ["server", "transport-async-rw"] }
+futures = "0.3"
+ts-rs = { version = "=12.0.1", features = ["serde-json-impl", "no-serde-warnings"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+jsonschema = { version = "0.52", default-features = false }
+resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts", "raster-images"] }
+image = { version = "0.25.8", default-features = false, features = ["png", "jpeg"] }
+base64 = "0.22"
