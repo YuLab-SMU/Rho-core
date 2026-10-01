@@ -1,8 +1,9 @@
 # Rho core
 
 The generic Host, operation journal, plugin lifecycle, public protocol and SDK,
-CLI, HTTP and MCP edges. Scientific implementations live in `Rho-plugins`;
-the application shell and product assembly live in `Rho`.
+CLI, HTTP and MCP edges. Scientific implementations live in
+[Rho-plugins](https://github.com/YuLab-SMU/Rho-plugins); the application shell and
+product assembly live in [Rho](https://github.com/YuLab-SMU/Rho).
 
 ```sh
 cargo build --locked
@@ -26,4 +27,5 @@ snapshots are vendored dependencies, never a second source of maintenance.
 Tests are selected by concrete core behavior. Domain artifact conformance tests
 can consume explicitly provided plugin packages; their presence does not require
 all scientific workflows for a core edit. Old monorepo layout checks are retired.
-See the application repository's `docs/DEVELOPMENT.md` for coordinated work.
+See the application's [development guide](https://github.com/YuLab-SMU/Rho/blob/main/docs/DEVELOPMENT.md)
+for coordinated work.
