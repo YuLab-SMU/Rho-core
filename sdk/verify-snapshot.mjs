@@ -22,6 +22,16 @@ export function verifySnapshot(root) {
     assert.equal(hash(bytes), file.sha256, `SDK content changed: ${file.path}`);
     assert.equal(Boolean(stat.mode & 0o111), file.executable, `SDK mode changed: ${file.path}`);
   }
+  const actual = new Set(['CORE-LICENSE']);
+  function inventory(relative) {
+    assert.ok(!path.isAbsolute(relative) && !relative.split('/').some(p => ['', '.', '..'].includes(p)));
+    const location = path.join(root, relative), stat = fs.lstatSync(location);
+    assert.ok(!stat.isSymbolicLink(), `SDK directory contains a symlink: ${relative}`);
+    if (stat.isDirectory()) for (const name of fs.readdirSync(location)) inventory(`${relative}/${name}`);
+    else { assert.ok(stat.isFile()); actual.add(relative); }
+  }
+  for (const directory of manifest.roots) inventory(directory);
+  assert.deepEqual([...actual].sort(), [...names].sort(), 'SDK contains missing or unlisted files');
   return manifest;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
