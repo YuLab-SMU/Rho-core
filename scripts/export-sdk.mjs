@@ -18,6 +18,8 @@ const files = [];
 function copy(relative) {
   const source = path.join(root, relative), stat = fs.lstatSync(source);
   assert.ok(!stat.isSymbolicLink(), `SDK source is a symlink: ${relative}`);
+  // Finder metadata is local filesystem state, never a public dependency.
+  if (path.basename(relative) === '.DS_Store' && stat.isFile()) return;
   if (stat.isDirectory()) {
     for (const name of fs.readdirSync(source).sort()) {
       if (!['target', 'node_modules', '.git'].includes(name)) copy(`${relative}/${name}`);
