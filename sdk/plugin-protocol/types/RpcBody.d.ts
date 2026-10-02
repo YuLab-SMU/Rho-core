@@ -20,7 +20,18 @@ export type RpcBody = { "type": "initialize", "data": { instance: PluginInstance
  * Optional protocol extensions. Unknown bounded names are ignored by
  * Hosts; an extension is used only after exact readiness advertises it.
  */
-features?: Array<string>, } } | { "type": "query", "data": PluginCall } | { "type": "control", "data": PluginCall } | { "type": "invoke", "data": PluginCall } | { "type": "query_result", "data": { data: JsonValue, completeness: ObservationCompleteness, source: ResourceReference | null, } } | { "type": "control_result", "data": { data: JsonValue, } } | { "type": "commit_plan", "data": PluginCommitPlan } | { "type": "host_call", "data": {
+features?: Array<string>, } } | { "type": "query", "data": PluginCall } | { "type": "control", "data": PluginCall } | { "type": "invoke", "data": PluginCall } | { "type": "query_result", "data": { data: JsonValue, completeness: ObservationCompleteness, source: ResourceReference | null,
+/**
+ * Owner-reported Unix milliseconds when this data was observed, not
+ * when the reply was sent. Cached reads retain the original time.
+ * Omitted or null means unknown; the Host must not invent a timestamp.
+ */
+observed_at_ms: number | null,
+/**
+ * Owner limitations on this observation, preserved in the public
+ * query envelope. Subject to the existing control/response byte bound.
+ */
+notices: Array<string>, } } | { "type": "control_result", "data": { data: JsonValue, } } | { "type": "commit_plan", "data": PluginCommitPlan } | { "type": "host_call", "data": {
 /**
  * Active incoming call whose authority this reverse call inherits.
  */

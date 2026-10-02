@@ -189,7 +189,7 @@ pub struct HostOverview {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, ts_rs::TS)]
 pub struct Observed<T> {
     pub source: String,
-    pub observed_at_ms: i64,
+    pub observed_at_ms: Option<i64>,
     pub status: crate::QueryStatus,
     pub completeness: crate::ObservationCompleteness,
     pub data: Option<T>,

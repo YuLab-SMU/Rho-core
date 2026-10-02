@@ -256,6 +256,15 @@ pub enum RpcBody {
         data: Value,
         completeness: ObservationCompleteness,
         source: Option<ResourceReference>,
+        /// Owner-reported Unix milliseconds when this data was observed, not
+        /// when the reply was sent. Cached reads retain the original time.
+        /// Omitted or null means unknown; the Host must not invent a timestamp.
+        #[serde(default)]
+        observed_at_ms: Option<i64>,
+        /// Owner limitations on this observation, preserved in the public
+        /// query envelope. Subject to the existing control/response byte bound.
+        #[serde(default)]
+        notices: Vec<String>,
     },
     ControlResult {
         data: Value,
@@ -332,6 +341,8 @@ impl std::fmt::Debug for RpcBody {
 pub enum ObservationCompleteness {
     Complete,
     Partial,
+    /// Retained data is available; this does not assert an active/busy runtime
+    /// or a fresh native read. Preserve its original observation time.
     Cached,
     Unavailable,
 }
@@ -405,5 +416,34 @@ impl RpcSessionGuard {
             .checked_add(1)
             .ok_or_else(|| ProtocolError("sequence exhausted; reconnect explicitly".into()))?;
         Ok(frame)
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn observation_metadata_is_optional_typed_and_within_the_control_frame_budget() {
+        let mut wire = json!({"protocol_version":PLUGIN_PROTOCOL_VERSION,
+            "connection":"connection-test","instance":"instance-test","sequence":1,"request":"read-test",
+            "body":{"type":"query_result","data":{"data":{},"completeness":"partial","source":null}}});
+        let decode = |wire: &Value| RpcFrame::decode(&serde_json::to_vec(wire).unwrap());
+        let RpcBody::QueryResult { observed_at_ms, notices, .. } = decode(&wire).unwrap().body else {
+            panic!("expected observation");
+        };
+        assert_eq!(observed_at_ms, None);
+        assert!(notices.is_empty());
+        wire["body"]["data"]["observed_at_ms"] = json!(1234);
+        wire["body"]["data"]["notices"] = json!(["生成过程未知 🧬"]);
+        let frame = decode(&wire).unwrap();
+        assert_eq!(serde_json::to_value(&frame).unwrap()["body"], wire["body"]);
+        wire["body"]["data"]["observed_at_ms"] = json!("now");
+        assert!(decode(&wire).is_err(), "text cannot become a fabricated timestamp");
+        wire["body"]["data"]["observed_at_ms"] = Value::Null;
+        wire["body"]["data"]["notices"] = json!(["x".repeat(MAX_CONTROL_BYTES)]);
+        let error = decode(&wire).unwrap_err();
+        assert!(error.to_string().contains("byte limit"), "{error}");
     }
 }

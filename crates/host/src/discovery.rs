@@ -239,7 +239,7 @@ impl DiscoveryOwner {
                                 .unwrap_or_else(|| "project-unselected".into()),
                         },
                         source: format!("host/{id}/failed-read"),
-                        observed_at_ms: SystemClock.now_ms()?,
+                        observed_at_ms: Some(SystemClock.now_ms()?),
                         status: QueryStatus::Unavailable,
                         completeness: ObservationCompleteness::Unknown,
                         data: None,
@@ -460,7 +460,7 @@ impl QueryHandler for DiscoveryHandler {
                     .unwrap_or_else(|| "project-unselected".into()),
             },
             source: "host/composed-owner-observations".into(),
-            observed_at_ms: SystemClock.now_ms()?,
+            observed_at_ms: Some(SystemClock.now_ms()?),
             status: QueryStatus::Ready,
             completeness: if id == "host.overview" {
                 ObservationCompleteness::Partial

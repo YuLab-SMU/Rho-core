@@ -226,7 +226,7 @@ impl QueryHandler for Read {
         Ok(host::QuerySnapshot {
             target,
             source: "plugins/archive".into(),
-            observed_at_ms: SystemClock.now_ms()?,
+            observed_at_ms: Some(SystemClock.now_ms()?),
             status: host::QueryStatus::Ready,
             completeness: host::ObservationCompleteness::Complete,
             notices: vec![],

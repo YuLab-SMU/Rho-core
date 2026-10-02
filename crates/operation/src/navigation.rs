@@ -54,7 +54,7 @@ impl RegistrySnapshot {
         if let Some(read) = self.read_link(
             context,
             "operation.get",
-            "Read the authoritative original operation and its recovery evidence",
+            "Read the original operation journal record and its recovery evidence",
             json!({"operation_id":id}),
         )? {
             reads.push(read);
@@ -81,7 +81,7 @@ impl RegistrySnapshot {
             OperationStatus::Reconciling => (DiagnosticCode::Busy, DiagnosticContinuation::ReadAgain, "The owner is checking native evidence for this operation.".into()),
             OperationStatus::Failed => (DiagnosticCode::ExecutionFailed, DiagnosticContinuation::InspectOriginal, record.error.clone().unwrap_or_else(|| "The owner reported execution failure; inspect original evidence before deciding on another action.".into())),
             OperationStatus::Cancelled => (DiagnosticCode::Cancelled, DiagnosticContinuation::InspectOriginal, "The owner confirmed cancellation. Cancellation does not establish rollback of earlier effects.".into()),
-            OperationStatus::Uncertain => (DiagnosticCode::OutcomeUncertain, DiagnosticContinuation::InspectOriginal, "The original outcome is uncertain. Read its record and retained evidence; do not replay the command.".into()),
+            OperationStatus::Uncertain => (DiagnosticCode::OutcomeUncertain, DiagnosticContinuation::InspectOriginal, "The original outcome is uncertain. Read its record and retained evidence; do not replay the command. New owner observations can describe current state without proving this operation caused it. Independent work remains subject to its own authority and native preconditions.".into()),
             OperationStatus::Succeeded => (DiagnosticCode::Unavailable, DiagnosticContinuation::None, String::new()),
         };
         if record.status != OperationStatus::Succeeded {

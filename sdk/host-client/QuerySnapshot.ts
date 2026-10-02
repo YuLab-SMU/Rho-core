@@ -6,4 +6,9 @@ import type { QueryStatus } from "./QueryStatus";
 import type { TargetRef } from "./TargetRef";
 import type { JsonValue } from "./serde_json/JsonValue";
 
-export type QuerySnapshot = { target: TargetRef, source: string, observed_at_ms: number, status: QueryStatus, completeness: ObservationCompleteness, data: JsonValue | null, notices: Array<string>, next_reads: Array<NextRead>, diagnostics: Array<Diagnostic>, };
+export type QuerySnapshot = { target: TargetRef, source: string,
+/**
+ * Source-reported Unix milliseconds for this observation. Null means the
+ * time is unknown; receiving a reply does not establish a fresh observation.
+ */
+observed_at_ms: number | null, status: QueryStatus, completeness: ObservationCompleteness, data: JsonValue | null, notices: Array<string>, next_reads: Array<NextRead>, diagnostics: Array<Diagnostic>, };

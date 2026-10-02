@@ -366,7 +366,7 @@ impl QueryHandler for EventsHandler {
                     .unwrap_or_else(|| "host-local-journal".into()),
             },
             source: "operation-journal/outbox".into(),
-            observed_at_ms: SystemClock.now_ms()?,
+            observed_at_ms: Some(SystemClock.now_ms()?),
             status: QueryStatus::Ready,
             completeness: if page.has_more {
                 ObservationCompleteness::Partial

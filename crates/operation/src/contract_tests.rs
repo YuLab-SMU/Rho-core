@@ -807,7 +807,7 @@ impl QueryHandler for TestQuery {
                 identity: "/project".into(),
             },
             source: "test-owner".into(),
-            observed_at_ms: 1,
+            observed_at_ms: Some(1),
             status: QueryStatus::Ready,
             completeness: ObservationCompleteness::Complete,
             data: Some(self.data.clone()),

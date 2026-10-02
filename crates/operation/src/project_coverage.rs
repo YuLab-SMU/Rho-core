@@ -61,7 +61,7 @@ impl QueryHandler for OperationProjectCoverageHandler {
         Ok(QuerySnapshot {
             next_reads: vec![], diagnostics: vec![],
             target: TargetRef { kind: "project".into(), identity: self.project.clone() },
-            source: "operation-journal".into(), observed_at_ms: SystemClock.now_ms()?,
+            source: "operation-journal".into(), observed_at_ms: Some(SystemClock.now_ms()?),
             status: QueryStatus::Ready, completeness: ObservationCompleteness::Complete,
             data: Some(serde_json::to_value(coverage).map_err(invalid)?),
             notices: vec!["Coverage describes current visibility only. It does not freeze records, establish a native reference inventory or authorize material cleanup.".into()],

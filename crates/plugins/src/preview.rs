@@ -92,7 +92,7 @@ impl PluginService {
                 let fixture = live.fixtures.iter().find(|fixture| fixture.capability == *capability && fixture.arguments == *arguments);
                 Ok(Some(json!(host::QuerySnapshot {
                     target: host::TargetRef { kind: "plugin_fixture_preview".into(), identity: view.to_string() },
-                    source: "fixture_preview".into(), observed_at_ms: SystemClock.now_ms()?,
+                    source: "fixture_preview".into(), observed_at_ms: Some(SystemClock.now_ms()?),
                     status: if fixture.is_some() { host::QueryStatus::Ready } else { host::QueryStatus::Unavailable },
                     completeness: if fixture.is_some() { host::ObservationCompleteness::Complete } else { host::ObservationCompleteness::Partial },
                     data: fixture.map(|fixture| fixture.data.clone()),

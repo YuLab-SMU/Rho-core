@@ -25,6 +25,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     data: serde_json::to_value(&reference)?,
                     completeness: ObservationCompleteness::Complete,
                     source: Some(reference),
+                    observed_at_ms: None,
+                    notices: vec![],
                 }
             }
             RpcBody::OperationSettled(settlement) => {

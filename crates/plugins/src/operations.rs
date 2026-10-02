@@ -303,6 +303,7 @@ impl OperationHandler for RoutingHandler {
                 data,
                 completeness: ObservationCompleteness::Complete,
                 source,
+                ..
             } = response
             else {
                 return Err(OperationError::Unavailable(
@@ -642,6 +643,8 @@ impl QueryHandler for RoutingHandler {
             data,
             completeness,
             source,
+            observed_at_ms,
+            mut notices,
         } = reply
         else {
             return Err(OperationError::Unavailable(
@@ -655,14 +658,16 @@ impl QueryHandler for RoutingHandler {
                 .await
                 .map_err(OperationError::Unavailable)?;
         }
+        if completeness == ObservationCompleteness::Cached {
+            notices.push("Cached observation from this provider; current native state was not rechecked".into());
+        }
         Ok(host::QuerySnapshot {
             target: target(&request.binding)?,
             source: serde_json::to_string(&json!({"binding":request.binding,"resource":source}))
                 .unwrap(),
-            observed_at_ms: SystemClock.now_ms()?,
+            observed_at_ms,
             status: match completeness {
                 ObservationCompleteness::Unavailable => host::QueryStatus::Unavailable,
-                ObservationCompleteness::Cached => host::QueryStatus::Busy,
                 _ => host::QueryStatus::Ready,
             },
             completeness: match completeness {
@@ -673,11 +678,7 @@ impl QueryHandler for RoutingHandler {
                 ObservationCompleteness::Unavailable => host::ObservationCompleteness::Unknown,
             },
             data: Some(data),
-            notices: if completeness == ObservationCompleteness::Cached {
-                vec!["Cached observation from this provider".into()]
-            } else {
-                vec![]
-            },
+            notices,
             next_reads: vec![],
             diagnostics: vec![],
         })

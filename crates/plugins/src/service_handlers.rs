@@ -1011,7 +1011,7 @@ impl QueryHandler for Read {
                 "plugins/repository-and-native-lifecycle"
             }
             .into(),
-            observed_at_ms: SystemClock.now_ms()?,
+            observed_at_ms: Some(SystemClock.now_ms()?),
             status: host::QueryStatus::Ready,
             completeness: if self.id == "plugins.delegated_operation"
                 && data["operation_id"].is_null()

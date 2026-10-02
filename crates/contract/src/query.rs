@@ -40,7 +40,9 @@ pub enum QueryStatus {
 pub struct QuerySnapshot {
     pub target: TargetRef,
     pub source: String,
-    pub observed_at_ms: i64,
+    /// Source-reported Unix milliseconds for this observation. Null means the
+    /// time is unknown; receiving a reply does not establish a fresh observation.
+    pub observed_at_ms: Option<i64>,
     pub status: QueryStatus,
     pub completeness: ObservationCompleteness,
     pub data: Option<Value>,

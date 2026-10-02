@@ -12,6 +12,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     data: call.arguments.clone(),
                     completeness: ObservationCompleteness::Complete,
                     source: None,
+                    observed_at_ms: None,
+                    notices: vec![],
                 }
             }
             RpcBody::OperationSettled(settlement) => {

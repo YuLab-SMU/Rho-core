@@ -419,6 +419,9 @@ pub enum OperationStatus {
     Succeeded,
     Failed,
     Cancelled,
+    /// Terminal execution record with an unconfirmed outcome. Later owner
+    /// observations may add knowledge; they do not rewrite this original record
+    /// or authorize replay. Independent work uses its own preconditions.
     Uncertain,
 }
 

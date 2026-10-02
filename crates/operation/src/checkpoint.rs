@@ -69,7 +69,7 @@ impl QueryHandler for OperationEventsCheckpointHandler {
                 identity: self.project.clone(),
             },
             source: "operation-journal".into(),
-            observed_at_ms: SystemClock.now_ms()?,
+            observed_at_ms: Some(SystemClock.now_ms()?),
             status: QueryStatus::Ready,
             completeness: ObservationCompleteness::Complete,
             data: Some(

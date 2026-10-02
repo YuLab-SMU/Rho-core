@@ -118,7 +118,7 @@ impl QueryHandler for OperationEvidenceHandler {
                 identity: args.reference.operation_id.as_str().into(),
             },
             source: "operation-journal/evidence".into(),
-            observed_at_ms: SystemClock.now_ms()?,
+            observed_at_ms: Some(SystemClock.now_ms()?),
             status: QueryStatus::Ready,
             completeness: if page.next_offset.is_some() {
                 ObservationCompleteness::Partial

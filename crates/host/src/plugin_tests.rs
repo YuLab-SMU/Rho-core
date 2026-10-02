@@ -819,7 +819,7 @@ impl QueryHandler for Read {
                 identity: self.owner.scope.clone(),
             },
             source: "plugins/test-project-lifecycle".into(),
-            observed_at_ms: SystemClock.now_ms()?,
+            observed_at_ms: Some(SystemClock.now_ms()?),
             status: h::QueryStatus::Ready,
             completeness: h::ObservationCompleteness::Complete,
             notices: vec![],

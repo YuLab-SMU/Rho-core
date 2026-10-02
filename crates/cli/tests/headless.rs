@@ -113,6 +113,9 @@ fn package(path: &Path) -> PluginArchive {
             "preview":{"id":"fixture.notes.preview","version":1}}],
         "backend":{"executable":"dist/backend","arguments":[]},
         "capabilities":[
+            query("fixture.notes.observe", json!({"type":"object","properties":{
+                "mode":{"enum":["live","cached","unknown_time","partial","unavailable"]}},
+                "required":["mode"],"additionalProperties":false}), json!({"mode":"live"})),
             query("fixture.notes.search", schema::<rho_plugin_protocol::ContextSearch>(),
                 json!({"text":"","after":null,"limit":20})),
             query("fixture.notes.preview", schema::<rho_plugin_protocol::PreviewContext>(),
@@ -123,6 +126,91 @@ fn package(path: &Path) -> PluginArchive {
         "configuration_schema":{"type":"object"},"default_configuration":{}
     })).unwrap()).unwrap();
     snapshot_directory(path, None, &backend_target()).unwrap()
+}
+
+#[test]
+fn observations_keep_their_time_and_limits_after_external_changes_and_uncertain_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = package(&dir.path().join("package"));
+    let db = dir.path().join("catalog.sqlite");
+    PluginRepository::open(&repository_path(&db)).unwrap().import(&archive).unwrap();
+    let project = dir.path().join("project");
+    fs::create_dir(&project).unwrap();
+    fs::write(project.join("external.txt"), "A 研究\n").unwrap();
+    let (mut session, _) = Session::open(&db, &project, &[DOMAIN_SCOPE]);
+    let activated = session.invoke("activate", "plugins.activate", json!({"revision":archive.revision.id,
+        "artifact":archive.artifacts[0].id,"target":backend_target(),"alias":"notes",
+        "configuration":{"uncertain_note":"alpha"}}));
+    assert_eq!(activated["result"]["status"], "succeeded", "{activated}");
+    let instance = activated["result"]["output"]["instance"]["identity"].clone();
+    let resolve = |session: &mut Session, id: &str| {
+        let reply = session.query("plugins.resolve", json!({"instance":instance,"capability":{"id":id,"version":1}}));
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply["result"]["data"].clone()
+    };
+    let binding = resolve(&mut session, "fixture.notes.observe");
+    let observe = |session: &mut Session, mode: &str| {
+        let reply = session.query("fixture.notes.observe", json!({"binding":binding,
+            "arguments":{"mode":mode},"preconditions":null}));
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply["result"].clone()
+    };
+    let first = observe(&mut session, "live");
+    assert_eq!(first["data"]["text"], "A 研究\n");
+    assert!(first["observed_at_ms"].is_i64());
+
+    // A write outside Rho is a new observation, not an invented Operation.
+    fs::write(project.join("external.txt"), "B 🧬\n").unwrap();
+    let cached = observe(&mut session, "cached");
+    assert_eq!(cached["observed_at_ms"], first["observed_at_ms"]);
+    assert_eq!(cached["data"], first["data"]);
+    assert_eq!(cached["status"], "ready", "cached bytes remain readable");
+    assert_eq!(cached["completeness"], "partial");
+    assert!(cached["notices"].as_array().unwrap().contains(&json!("Retained bytes; disk has not been read again.")));
+    let current = observe(&mut session, "live");
+    assert_eq!(current["data"]["text"], "B 🧬\n");
+    assert_ne!(current["data"]["digest"], first["data"]["digest"]);
+    let unknown = observe(&mut session, "unknown_time");
+    assert!(unknown["observed_at_ms"].is_null(), "{unknown}");
+    assert_eq!(unknown["status"], "ready");
+    let partial = observe(&mut session, "partial");
+    assert_eq!(partial["completeness"], "partial");
+    assert_eq!(partial["notices"], json!(["Only external.txt was inspected; its producer is unknown."]));
+    let unavailable = observe(&mut session, "unavailable");
+    assert_eq!(unavailable["status"], "unavailable");
+    assert_eq!(unavailable["completeness"], "unknown");
+    assert!(unavailable["observed_at_ms"].is_null());
+    assert_eq!(unavailable["notices"], json!(["No native observation is available."]));
+
+    let append = resolve(&mut session, "fixture.notes.append");
+    let args = json!({"binding":append,"arguments":{"note":"alpha","expected_version":1,"text":"new\n"},"preconditions":null});
+    let original = session.invoke("uncertain", "fixture.notes.append", args.clone());
+    assert_eq!(original["result"]["status"], "uncertain", "{original}");
+    let id = original["result"]["operation"]["operation_id"].clone();
+    let search = resolve(&mut session, "fixture.notes.search");
+    let page = session.query("fixture.notes.search", json!({"binding":search,
+        "arguments":{"text":"alpha","after":null,"limit":20},"preconditions":null}));
+    let reference = page["result"]["data"]["items"][0]["reference"].clone();
+    assert_eq!(reference["selector"]["version"], 2);
+    let preview = resolve(&mut session, "fixture.notes.preview");
+    let shown = session.query("fixture.notes.preview", json!({"binding":preview,
+        "arguments":{"reference":reference,"inclusion":{},"max_bytes":4096},"preconditions":null}));
+    assert_eq!(shown["result"]["data"]["text"], "首行 alpha\nnew\n");
+    assert_eq!(shown["result"]["data"]["data"]["executions"], 1);
+    assert!(shown["result"]["observed_at_ms"].is_null(), "omitted owner time remains unknown");
+    // Current matching state cannot rewrite attribution or replay the old action.
+    assert_eq!(session.request("get_operation", json!({"operation_id":id}))["result"], original["result"]);
+    assert_eq!(session.invoke("uncertain", "fixture.notes.append", args)["result"], original["result"]);
+    assert_eq!(observe(&mut session, "live")["data"], current["data"]);
+    let unrelated = session.invoke("independent", "fixture.notes.append", json!({"binding":append,
+        "arguments":{"note":"beta","expected_version":3,"text":"independent\n"},"preconditions":null}));
+    assert_eq!(unrelated["result"]["status"], "succeeded", "{unrelated}");
+    assert_eq!(unrelated["result"]["output"]["executions"], 2);
+    let recent = session.query("operation.list_recent", json!({}));
+    assert_eq!(recent["ok"], true, "{recent}");
+    assert_eq!(recent["result"]["data"]["operations"].as_array().unwrap().len(), 3,
+        "only activation and the two requested actions enter the journal: {recent}");
+    session.close();
 }
 
 #[test]
@@ -339,6 +427,7 @@ fn external_mcp_client_discovers_and_calls_the_same_headless_capabilities() {
     PluginRepository::open(&repository_path(&db)).unwrap().import(&archive).unwrap();
     let project = dir.path().join("project");
     fs::create_dir(&project).unwrap();
+    fs::write(project.join("external.txt"), "MCP observation 🧬\n").unwrap();
 
     // Without a launcher grant the domain tools are not offered.
     let mut ungranted = Mcp::open(&db, &project, &[]);
@@ -362,8 +451,20 @@ fn external_mcp_client_discovers_and_calls_the_same_headless_capabilities() {
     for name in ["rho.fixture.notes.search.v1", "rho.fixture.notes.preview.v1", "rho.fixture.notes.append.v1"] {
         assert!(tools.iter().any(|tool| tool == name), "{name} missing from {tools:?}");
     }
-    let mut resolve = |mcp: &mut Mcp, id: &str| mcp.tool("rho.plugins.resolve.v1",
+    let resolve = |mcp: &mut Mcp, id: &str| mcp.tool("rho.plugins.resolve.v1",
         json!({"instance":instance,"capability":{"id":id,"version":1}})).unwrap()["data"].clone();
+    let observation = resolve(&mut mcp, "fixture.notes.observe");
+    let live = mcp.tool("rho.fixture.notes.observe.v1", json!({"binding":observation,
+        "arguments":{"mode":"live"},"preconditions":null})).unwrap();
+    let cached = mcp.tool("rho.fixture.notes.observe.v1", json!({"binding":observation,
+        "arguments":{"mode":"cached"},"preconditions":null})).unwrap();
+    assert!(live["observed_at_ms"].is_i64());
+    assert_eq!(cached["observed_at_ms"], live["observed_at_ms"]);
+    assert_eq!(cached["status"], "ready");
+    assert_eq!(cached["notices"][0], "Retained bytes; disk has not been read again.");
+    let unknown = mcp.tool("rho.fixture.notes.observe.v1", json!({"binding":observation,
+        "arguments":{"mode":"unknown_time"},"preconditions":null})).unwrap();
+    assert!(unknown["observed_at_ms"].is_null());
     let search = resolve(&mut mcp, "fixture.notes.search");
     let page = mcp.tool("rho.fixture.notes.search.v1", json!({"binding":search,
         "arguments":{"text":"beta","after":null,"limit":20},"preconditions":null})).unwrap();

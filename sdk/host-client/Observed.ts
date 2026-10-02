@@ -2,4 +2,4 @@
 import type { ObservationCompleteness } from "./ObservationCompleteness";
 import type { QueryStatus } from "./QueryStatus";
 
-export type Observed<T> = { source: string, observed_at_ms: number, status: QueryStatus, completeness: ObservationCompleteness, data: T | null, notices: Array<string>, };
+export type Observed<T> = { source: string, observed_at_ms: number | null, status: QueryStatus, completeness: ObservationCompleteness, data: T | null, notices: Array<string>, };

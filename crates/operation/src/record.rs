@@ -36,10 +36,10 @@ impl OperationGetHandler {
         descriptors: &[CapabilityDescriptor],
     ) -> Result<Self, OperationError> {
         let documentation = CapabilityDocumentation {
-            summary: "Read one authoritative operation".into(),
+            summary: "Read one original operation journal record".into(),
             purpose: "Read an original operation by its exact identity with project/principal visibility, terminal or in-progress status, retained recovery and its recorded capability contract.".into(),
             when_to_use: vec!["Verify accepted execution, cancellation, a lost acknowledgement or an uncertain result without repeating the command.".into()],
-            limitations: vec!["Historical output is preserved with its recorded capability identity even when that owner is unavailable in this Host. Querying never starts a runtime or performs recovery.".into(), "An accepted request or cancellation request is not proof of scientific completion or rollback.".into()],
+            limitations: vec!["Historical output is preserved with its recorded capability identity even when that owner is unavailable in this Host. Querying never starts a runtime or performs recovery.".into(), "An accepted request or cancellation request is not proof of scientific completion or rollback.".into(), "This is authority over Rho's journal, not a complete account of external activity. A later observation of matching state does not prove which action caused it, and an uncertain original outcome does not prohibit independent work with its own authority and native preconditions.".into()],
             owner: "operation".into(), effects: "Read-only journal observation; no admission, execution or recovery mutation.".into(),
             retry_rule: "Read the same OperationId. Do not replay a command to discover its outcome.".into(), cancellation_rule: "Stopping this read does not stop scientific work.".into(),
             preconditions: vec![], examples: vec![CapabilityExample { arguments: json!({"operation_id":"operation-example"}), result_explanation: "record is null for an unavailable or invisible operation. Otherwise status and recovery describe the original action; output_contract binds polymorphic data to its exact recorded capability.".into() }],
@@ -140,7 +140,7 @@ impl QueryHandler for OperationGetHandler {
                     .unwrap_or_else(|| args.operation_id.as_str().into()),
             },
             source: "operation-journal".into(),
-            observed_at_ms: SystemClock.now_ms()?,
+            observed_at_ms: Some(SystemClock.now_ms()?),
             status: QueryStatus::Ready,
             completeness: ObservationCompleteness::Complete,
             data: Some(

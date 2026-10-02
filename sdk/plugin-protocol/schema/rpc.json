@@ -131,12 +131,20 @@
       ]
     },
     "ObservationCompleteness": {
-      "type": "string",
-      "enum": [
-        "complete",
-        "partial",
-        "cached",
-        "unavailable"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable"
+          ]
+        },
+        {
+          "description": "Retained data is available; this does not assert an active/busy runtime\nor a fresh native read. Preserve its original observation time.",
+          "type": "string",
+          "const": "cached"
+        }
       ]
     },
     "OperationSettlement": {
@@ -574,6 +582,23 @@
                   "$ref": "#/$defs/ObservationCompleteness"
                 },
                 "data": true,
+                "notices": {
+                  "description": "Owner limitations on this observation, preserved in the public\nquery envelope. Subject to the existing control/response byte bound.",
+                  "type": "array",
+                  "default": [],
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "observed_at_ms": {
+                  "description": "Owner-reported Unix milliseconds when this data was observed, not\nwhen the reply was sent. Cached reads retain the original time.\nOmitted or null means unknown; the Host must not invent a timestamp.",
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "default": null
+                },
                 "source": {
                   "anyOf": [
                     {

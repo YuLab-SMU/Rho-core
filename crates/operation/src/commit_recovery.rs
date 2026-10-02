@@ -411,7 +411,7 @@ impl crate::QueryHandler for OperationCommitStatusHandler {
                 identity: args.operation_id.as_str().into(),
             },
             source: "operation-journal/commit-candidate".into(),
-            observed_at_ms: crate::SystemClock.now_ms()?,
+            observed_at_ms: Some(crate::SystemClock.now_ms()?),
             status: QueryStatus::Ready,
             completeness: ObservationCompleteness::Complete,
             notices: vec![],

@@ -64,7 +64,7 @@ impl QueryHandler for RecentOperationsHandler {
                 identity: self.project.clone(),
             },
             source: "operation-journal".into(),
-            observed_at_ms: SystemClock.now_ms()?,
+            observed_at_ms: Some(SystemClock.now_ms()?),
             status: QueryStatus::Ready,
             completeness: ObservationCompleteness::Partial,
             data: Some(serde_json::to_value(page).map_err(invalid)?),
