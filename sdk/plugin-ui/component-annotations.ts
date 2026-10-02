@@ -42,7 +42,7 @@ export function componentAnnotationDialog(options:AnnotationSenderOptions){
  }
  function act(work:()=>Promise<void>){if(busy)return;busy=true;error='';render();void work().catch(e=>{error=e instanceof Error?e.message:String(e);}).finally(()=>{busy=false;render();for(const button of bound)void count(button);});}
  async function check(source:AnnotationComponentSource){
-  if(source.reference.window!==options.client.view.window||!source.title||source.title.length>200)throw Error('Choose an exact source from this window.');
+  if(!source.title||source.title.length>200)throw Error('Choose an exact source with a short title.');
   const value=await read<ContextPreview>(source.preview.id,{binding:{provider:source.reference.provider,project:options.client.view.project,capability:source.preview,target:null},arguments:{reference:source.reference,inclusion:source.inclusion,max_bytes:16384},preconditions:null});
   if(!sameOperationValue(value.item.reference,source.reference)||value.truncated||!(value.data as any)?.annotation_source?.source_version)throw Error('The source is changed, too large, or does not offer annotation evidence. Choose a smaller supported inclusion.');preview=value.text;anchors=(value.data as any).annotation_anchors??[];
  }

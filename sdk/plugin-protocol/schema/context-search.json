@@ -15,14 +15,10 @@
     "text": {
       "description": "Empty text lists available sources. Owners document which fields match.",
       "type": "string"
-    },
-    "window": {
-      "type": "string"
     }
   },
   "additionalProperties": false,
   "required": [
-    "window",
     "text",
     "limit"
   ]

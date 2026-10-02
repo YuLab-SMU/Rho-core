@@ -1,5 +1,6 @@
 use rho_contract::{HostRequest, MAX_ARGUMENT_BYTES, SessionFrame, SessionReply};
-use rho_host::NextHost;
+use rho_contract::CallContext;
+use rho_host::{LocalGrants, NextHost};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
 use tokio::{
@@ -26,9 +27,12 @@ fn pool(request: &HostRequest) -> usize {
 
 pub async fn serve(
     host: Arc<NextHost>,
+    grants: &LocalGrants,
     input: impl AsyncRead + Unpin,
     mut output: impl AsyncWrite + Unpin,
 ) -> Result<(), String> {
+    // One fixed launcher authority for the whole session; frames cannot add scopes.
+    let context = Arc::new(NextHost::local_context_with(grants));
     write_packet(
         &mut output,
         &json!({"type":"ready", "protocol_version":1, "capabilities":host.capabilities()}),
@@ -94,7 +98,8 @@ pub async fn serve(
                 in_flight.insert(frame.id.clone());
                 counts[pool] += 1;
                 let host = host.clone();
-                tasks.spawn(async move { (pool, dispatch(host, frame).await) });
+                let context = context.clone();
+                tasks.spawn(async move { (pool, dispatch(host, &context, frame).await) });
             }
         }
     }
@@ -132,13 +137,9 @@ async fn read_frame(
     Ok(count)
 }
 
-async fn dispatch(host: Arc<NextHost>, frame: SessionFrame) -> SessionReply {
+async fn dispatch(host: Arc<NextHost>, context: &CallContext, frame: SessionFrame) -> SessionReply {
     match host
-        .dispatch_selected(
-            &NextHost::local_context(),
-            frame.test_project.as_ref(),
-            frame.request,
-        )
+        .dispatch_selected(context, frame.test_project.as_ref(), frame.request)
         .await
     {
         Ok(result) => SessionReply {

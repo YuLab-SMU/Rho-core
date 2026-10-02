@@ -27,7 +27,7 @@ pub(crate) async fn test_asset(
     };
     let host = match selected
         .host
-        .plugin_test_host(&NextHost::local_context(), &id)
+        .plugin_test_host(&state.local_context(), &id)
     {
         Ok(host) => host,
         Err(error) => return failure(StatusCode::NOT_FOUND, error.to_string()),
@@ -95,7 +95,7 @@ pub(crate) async fn dispatch(
     let host = match test_project {
         Some(id) => match selected
             .host
-            .plugin_test_host(&NextHost::local_context(), &id)
+            .plugin_test_host(&state.local_context(), &id)
         {
             Ok(host) => host,
             Err(error) => return failure(StatusCode::CONFLICT, error.to_string()),
@@ -103,7 +103,7 @@ pub(crate) async fn dispatch(
         None => selected.host.clone(),
     };
     let result = host
-        .dispatch_plugin_view(&NextHost::local_context(), window, token, message)
+        .dispatch_plugin_view(&state.local_context(), window, token, message)
         .await;
     let reply = match result {
         Ok(result) => SessionReply {

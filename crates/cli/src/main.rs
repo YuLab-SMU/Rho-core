@@ -6,7 +6,7 @@ mod session;
 
 use clap::{Parser, Subcommand};
 use rho_contract::{CapabilityRef, Invocation, OperationId, Precondition, QueryRequest};
-use rho_host::NextHost;
+use rho_host::{LocalGrants, NextHost};
 use serde_json::json;
 
 #[derive(Debug, Parser)]
@@ -25,11 +25,19 @@ struct Cli {
     plugins_only: bool,
     #[arg(long)]
     project: Option<PathBuf>,
+    /// Grant an additional scope to this local launcher's callers (repeatable).
+    /// Generic Core scopes are always present; domain scopes such as a plugin's
+    /// own authority are granted only here, never by manifests or requests.
+    #[arg(long = "grant-scope", value_name = "SCOPE", conflicts_with = "connect_url_file")]
+    grant_scope: Vec<String>,
     #[command(subcommand)]
     command: Command,
 }
 
 impl Cli {
+    fn grants(&self) -> Result<LocalGrants, rho_host::OperationError> {
+        LocalGrants::new(self.grant_scope.iter().cloned())
+    }
     async fn open_host(&self) -> Result<NextHost, String> {
         NextHost::open_plugin_workspace(
             &self.database,
@@ -158,7 +166,9 @@ async fn run() -> Result<(), CliFailure> {
         return print_json(&json!({"ok":true,"mode":"plugin_repository","result":result}))
             .map_err(Into::into);
     }
-    let context = NextHost::local_context();
+    // Validate launcher authority before opening any Host, store or runtime.
+    let grants = cli.grants()?;
+    let context = NextHost::local_context_with(&grants);
     if let Some(path) = &cli.connect_url_file {
         let (request,label)=match &cli.command {
             Command::Query {capability,capability_version,arguments}=>(json!({"method":"query_snapshot","params":{"capability":CapabilityRef::new(capability,*capability_version).map_err(|e|e.to_string())?,"arguments":serde_json::from_str::<serde_json::Value>(arguments).map_err(|e|e.to_string())?}}),"observation"),
@@ -195,6 +205,7 @@ async fn run() -> Result<(), CliFailure> {
     {
         return rho_workbench::serve_with_assets(
             cli.database.clone(),
+            grants,
             cli.project.as_deref(),
             *port,
             url_file.as_deref(),
@@ -206,13 +217,13 @@ async fn run() -> Result<(), CliFailure> {
     }
     if matches!(cli.command, Command::Mcp) {
         let host = Arc::new(cli.open_host().await?);
-        return rho_mcp::serve(host, tokio::io::stdin(), tokio::io::stdout())
+        return rho_mcp::serve(host, &grants, tokio::io::stdin(), tokio::io::stdout())
             .await
             .map_err(Into::into);
     }
     if matches!(cli.command, Command::Session) {
         let host = Arc::new(cli.open_host().await?);
-        return session::serve(host, tokio::io::stdin(), tokio::io::stdout())
+        return session::serve(host, &grants, tokio::io::stdin(), tokio::io::stdout())
             .await
             .map_err(Into::into);
     }

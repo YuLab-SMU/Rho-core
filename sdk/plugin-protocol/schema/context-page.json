@@ -61,17 +61,13 @@
           "$ref": "#/$defs/InstanceRef"
         },
         "selector": {
-          "description": "Owner-defined identity and observed native version/digest. Preview must\nrevalidate these against the original source; never silently refresh them."
-        },
-        "window": {
-          "type": "string"
+          "description": "Owner-defined identity and observed native version/digest. Preview must\nrevalidate these against the original source; never silently refresh them.\nProject, caller and authority come from the trusted call context; a view\ncaller's window restriction is held by the Host, never by this value."
         }
       },
       "additionalProperties": false,
       "required": [
         "provider",
         "contribution",
-        "window",
         "selector"
       ]
     },

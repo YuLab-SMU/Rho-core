@@ -497,8 +497,10 @@ contracts for contributed queries.
 `ContextSearch` / `ContextPage` and `PreviewContext` / `ContextPreview` describe
 bounded read-only discovery and preview. A `ContextContribution` declares its own
 search and preview queries; consumers resolve the exact active provider. A
-`ContextReference` retains that provider, contribution, explicit window and an
-opaque owner-defined selector. The owner must revalidate the selector's native
+`ContextReference` retains that provider, contribution and an opaque
+owner-defined selector; it names no window. Project, caller and authority come
+from the trusted call context, and a view caller's window restriction stays in
+the Host-held call scope. The owner must revalidate the selector's native
 identity/version before preview; references grant no scope and do not retain bytes.
 Page cursors are owner-defined, with at most 20 items per response. Preview text
 is plain text bounded to 64 KiB, with explicit truncation, bounded presentation

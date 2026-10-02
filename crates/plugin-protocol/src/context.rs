@@ -1,6 +1,8 @@
 //! Bounded context discovery and preview shared by contributed query owners.
 //! Selectors and inclusion options remain owner-defined. A reference does not
-//! grant access, preserve source bytes, or authorize an operation.
+//! grant access, preserve source bytes, or authorize an operation. Neither
+//! search nor references name a window: headless callers address the provider
+//! directly, and view restrictions stay in the Host-held call scope.
 use crate::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -26,9 +28,10 @@ fn bounded_json(value: &Value, limit: usize) -> Result<(), ProtocolError> {
 pub struct ContextReference {
     pub provider: InstanceRef,
     pub contribution: ContributionId,
-    pub window: WindowId,
     /// Owner-defined identity and observed native version/digest. Preview must
     /// revalidate these against the original source; never silently refresh them.
+    /// Project, caller and authority come from the trusted call context; a view
+    /// caller's window restriction is held by the Host, never by this value.
     pub selector: Value,
 }
 impl ContextReference {
@@ -61,7 +64,6 @@ impl ContextItem {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ContextSearch {
-    pub window: WindowId,
     /// Empty text lists available sources. Owners document which fields match.
     pub text: String,
     /// Opaque owner cursor; continuation does not imply a frozen multi-page read.
@@ -167,7 +169,7 @@ mod tests {
     #[test]
     fn context_requests_bound_unicode_and_opaque_options_without_native_core_types() {
         let mut search: ContextSearch =
-            serde_json::from_value(json!({"window":"one","text":"研究","after":null,"limit":20}))
+            serde_json::from_value(json!({"text":"研究","after":null,"limit":20}))
                 .unwrap();
         search.validate().unwrap();
         search.limit = 21;
@@ -186,7 +188,6 @@ mod tests {
                 artifact: ArtifactId::new(format!("sha256:{}", "b".repeat(64))).unwrap(),
             },
             contribution: ContributionId::new("documents").unwrap(),
-            window: WindowId::new("one").unwrap(),
             selector: json!({"native":"opaque","version":7}),
         };
         let mut preview = PreviewContext {
@@ -214,6 +215,16 @@ mod tests {
         assert!(result.validate().is_err());
         let mut wire = serde_json::to_value(preview).unwrap();
         wire["principal"] = json!("forged");
+        assert!(serde_json::from_value::<PreviewContext>(wire.clone()).is_err());
+        // The former window-bound shape is a different contract, not an alias.
+        wire.as_object_mut().unwrap().remove("principal");
+        wire["reference"]["window"] = json!("one");
         assert!(serde_json::from_value::<PreviewContext>(wire).is_err());
+        assert!(
+            serde_json::from_value::<ContextSearch>(
+                json!({"window":"one","text":"","after":null,"limit":1})
+            )
+            .is_err()
+        );
     }
 }

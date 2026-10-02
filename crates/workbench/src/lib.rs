@@ -83,6 +83,14 @@ struct AppState {
     assets: Option<PathBuf>,
     default_project: Option<PathBuf>,
     nonce: String,
+    /// Launcher-selected authority shared by HTTP and MCP callers. It is fixed
+    /// at startup; requests and connected clients cannot extend it.
+    grants: Arc<rho_host::LocalGrants>,
+}
+impl AppState {
+    fn local_context(&self) -> rho_contract::CallContext {
+        NextHost::local_context_with(&self.grants)
+    }
 }
 
 fn failure(status: StatusCode, error: impl Into<String>) -> Response {
@@ -153,7 +161,7 @@ async fn boundary(State(state): State<AppState>, mut request: Request, next: Nex
             },
         };
         if let Some(id) = &test_project {
-            let context = NextHost::local_context();
+            let context = state.local_context();
             if let Err(error) = selected.host.plugin_test_host(&context, id) {
                 return failure(StatusCode::CONFLICT, error.to_string());
             }
@@ -356,7 +364,7 @@ async fn dispatch(
             "project changed; refresh before making another request",
         );
     }
-    let mut context = NextHost::local_context();
+    let mut context = state.local_context();
     if let Some(window) = headers
         .get("x-rho-studio-window")
         .and_then(|v| v.to_str().ok())
@@ -463,6 +471,7 @@ async fn stylesheet(State(state): State<AppState>) -> Response {
 fn router(state: AppState, shutdown: CancellationToken) -> Router {
     let quit_signal = shutdown.clone();
     let hosting = state.hosting.clone();
+    let grants = state.grants.clone();
     let mcp = StreamableHttpService::new(
         move || {
             let hosting = hosting
@@ -472,7 +481,7 @@ fn router(state: AppState, shutdown: CancellationToken) -> Router {
                 .selected
                 .as_ref()
                 .ok_or_else(|| std::io::Error::other("select a project first"))?;
-            McpEdge::local(host.host.clone())
+            McpEdge::local(host.host.clone(), &grants)
                 .map(|edge| {
                     edge.observe_connections(&host.connections)
                         .http_project(host.root.to_string_lossy().into_owned())
@@ -547,15 +556,17 @@ fn router(state: AppState, shutdown: CancellationToken) -> Router {
 /// placing it in an HTTP request URL, Referer, static file or application log.
 pub async fn serve(
     database: PathBuf,
+    grants: rho_host::LocalGrants,
     project: Option<&Path>,
     port: u16,
     url_file: Option<&Path>,
 ) -> Result<(), String> {
-    serve_with_assets(database, project, port, url_file, None, None).await
+    serve_with_assets(database, grants, project, port, url_file, None, None).await
 }
 
 pub async fn serve_with_assets(
     database: PathBuf,
+    grants: rho_host::LocalGrants,
     project: Option<&Path>,
     port: u16,
     url_file: Option<&Path>,
@@ -614,6 +625,7 @@ pub async fn serve_with_assets(
         assets,
         default_project,
         nonce: uuid::Uuid::new_v4().simple().to_string(),
+        grants: Arc::new(grants),
     };
     let shutdown = CancellationToken::new();
     let app = router(state, shutdown.clone());
@@ -681,6 +693,7 @@ mod tests {
             assets: None,
             default_project: None,
             nonce: "fixture-nonce".into(),
+            grants: Arc::default(),
         };
         let app = router(state.clone(), CancellationToken::new());
         (temp, state, app)
@@ -1001,7 +1014,11 @@ mod tests {
         std::fs::create_dir(&other).unwrap();
         let change = json!({"project_root":other});
         let hosting = state.hosting.read().await;
-        let edge = McpEdge::local(hosting.selected.as_ref().unwrap().host.clone()).unwrap();
+        let edge = McpEdge::local(
+            hosting.selected.as_ref().unwrap().host.clone(),
+            &state.grants,
+        )
+        .unwrap();
         assert_eq!(
             request(&app, "/api/project", Some(change.clone()))
                 .await

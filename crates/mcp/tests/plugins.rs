@@ -32,7 +32,7 @@ async fn existing_mcp_connection_tracks_plugin_publications_and_invalidates_old_
             .await
             .unwrap(),
     );
-    let edge = McpEdge::local(host.clone()).unwrap();
+    let edge = McpEdge::local(host.clone(), &rho_host::LocalGrants::default()).unwrap();
     let (server_io, client_io) = tokio::io::duplex(128 * 1024);
     let server = tokio::spawn(async move { edge.serve(server_io).await.unwrap().waiting().await });
     let changed = Arc::new(Notify::new());

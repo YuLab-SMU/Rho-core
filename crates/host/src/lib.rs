@@ -32,6 +32,51 @@ pub struct NextHost {
     tasks: tokio_util::task::TaskTracker,
 }
 
+/// Scopes required by capabilities that the generic Core itself registers:
+/// operations, plugin lifecycle, resources, generic drafts and Host paths.
+/// Domain authority (R, environments, processes, remote compute, project
+/// writes, ...) is never implied; a trusted launcher grants it explicitly.
+pub const CORE_LOCAL_SCOPES: &[&str] = &[
+    "operation.read",
+    "project.references.read",
+    "project.read",
+    rho_plugins::PLUGINS_READ_SCOPE,
+    rho_plugins::PLUGINS_WRITE_SCOPE,
+    rho_plugins::PLUGINS_RUN_SCOPE,
+    rho_plugins::RESOURCES_READ_SCOPE,
+    rho_plugins::DOCUMENTS_READ_SCOPE,
+    rho_plugins::DOCUMENTS_WRITE_SCOPE,
+];
+
+/// Additional scopes chosen by the trusted local launcher (for example
+/// repeated `--grant-scope` arguments). Validated as ordinary scope tokens and
+/// bounded by the call context's scope limit; they cannot be supplied by a
+/// plugin manifest, a request body or a connected remote client.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalGrants {
+    scopes: std::collections::BTreeSet<String>,
+}
+impl LocalGrants {
+    pub fn new<I, S>(scopes: I) -> Result<Self, OperationError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let grants = Self {
+            scopes: scopes.into_iter().map(Into::into).collect(),
+        };
+        // Reuse the context's own token and count validation, including the
+        // generic defaults, so a launcher cannot exceed the shared bound.
+        NextHost::local_context_with(&grants)
+            .validate()
+            .map_err(|error| OperationError::InvalidInput(format!("invalid --grant-scope: {error}")))?;
+        Ok(grants)
+    }
+    pub fn scopes(&self) -> &std::collections::BTreeSet<String> {
+        &self.scopes
+    }
+}
+
 // Accepted tasks retain this entire lifetime, not just a gateway or query
 // handle. Drop adapters/journal before releasing the project's OS lease.
 struct HostRuntime {
@@ -159,7 +204,9 @@ impl NextHost {
         };
         result.map_err(|error| OperationError::Contract(error.to_string()))
     }
-    /// Context for a local, OS-user-owned CLI. Callers cannot put identity in Invocation.
+    /// Context for a local, OS-user-owned CLI. Callers cannot put identity in
+    /// Invocation. This grants only generic Core authority; domain scopes are
+    /// added by the trusted launcher through [`NextHost::local_context_with`].
     pub fn local_context() -> CallContext {
         CallContext {
             view_scope: None,
@@ -168,34 +215,20 @@ impl NextHost {
                 kind: CallerKind::Human,
                 id: "local-user".into(),
             },
-            scopes: std::collections::BTreeSet::from([
-                "operation.read".into(),
-                "project.references.read".into(),
-                "application.read".into(),
-                "application.control".into(),
-                "skill.read".into(),
-                rho_plugins::PLUGINS_READ_SCOPE.into(),
-                rho_plugins::RESOURCES_READ_SCOPE.into(),
-                rho_plugins::DOCUMENTS_READ_SCOPE.into(),
-                rho_plugins::DOCUMENTS_WRITE_SCOPE.into(),
-                rho_plugins::PLUGINS_WRITE_SCOPE.into(),
-                rho_plugins::PLUGINS_RUN_SCOPE.into(),
-                "workspace.run_r".into(),
-                "workspace.read".into(),
-                "project.read".into(),
-                "project.write".into(),
-                "environment.read".into(),
-                "environment.write".into(),
-                "process.run_local".into(),
-                "remote.execute".into(),
-                "slurm.read".into(),
-                "slurm.write".into(),
-            ]),
+            scopes: CORE_LOCAL_SCOPES.iter().map(|scope| (*scope).into()).collect(),
             connection_id: format!("cli:{}", std::process::id()),
             correlation_id: None,
             causation_id: None,
             trace_parent: None,
         }
+    }
+
+    /// Local context plus scopes explicitly selected by the trusted launcher.
+    /// Plugin manifests and request bodies never reach this list.
+    pub fn local_context_with(grants: &LocalGrants) -> CallContext {
+        let mut context = Self::local_context();
+        context.scopes.extend(grants.scopes.iter().cloned());
+        context
     }
 
     /// Compose standalone history observations without writer ownership or runtime startup.

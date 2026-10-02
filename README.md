@@ -18,6 +18,17 @@ application's `index.html`, `app.js` and `style.css`; changing those files does 
 rebuild the Host. `--default-project /absolute/existing/project` provides an
 application-selected project action without creating or populating a project.
 
+Local callers of `session`, `mcp` and `workbench` (HTTP and MCP) receive only the
+scopes that Core's own capabilities need. A plugin's domain authority is granted
+explicitly by the launcher with repeatable `--grant-scope SCOPE`, for example
+`--grant-scope project.write`. Manifests, request bodies and clients of an
+existing Host (`--connect-url-file`) cannot add scopes.
+
+Context search and references are windowless: an external caller addresses the
+provider and its owner-defined selector directly. `cargo test -p rho-cli --test
+headless --locked` runs that flow through a CLI session and stdio MCP with a
+protocol-only test plugin.
+
 Public SDK source is maintained here. `node scripts/generate.mjs` regenerates its
 contracts. Commit first, then `node scripts/export-sdk.mjs /new/snapshot` exports
 the public Rust/TypeScript dependency, exact file hashes, license and source

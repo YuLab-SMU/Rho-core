@@ -10,7 +10,7 @@ use rho_contract::{
     CallContext, CallerIdentity, CallerKind, CapabilityKind, CapabilityRef, HostRequest,
     Invocation, OperationGetArguments, PollOperationEventsArguments, Precondition, QueryRequest,
 };
-use rho_host::NextHost;
+use rho_host::{LocalGrants, NextHost};
 use rmcp::{
     ErrorData, RoleServer, ServerHandler, ServiceExt,
     model::{
@@ -256,8 +256,10 @@ impl McpEdge {
         self.catalog_for(&self.context)
             .expect("validated Host tool contracts")
     }
-    pub fn local(host: Arc<NextHost>) -> Result<Self, String> {
-        let mut context = NextHost::local_context();
+    /// The local MCP actor uses the same launcher-selected authority as the
+    /// CLI session; MCP tool arguments cannot add scopes.
+    pub fn local(host: Arc<NextHost>, grants: &LocalGrants) -> Result<Self, String> {
+        let mut context = NextHost::local_context_with(grants);
         context.principal = Some(context.caller.clone());
         context.caller = CallerIdentity {
             kind: CallerKind::Agent,
@@ -563,10 +565,11 @@ impl ServerHandler for McpEdge {
 
 pub async fn serve(
     host: Arc<NextHost>,
+    grants: &LocalGrants,
     input: impl AsyncRead + Unpin + Send + 'static,
     output: impl AsyncWrite + Unpin + Send + 'static,
 ) -> Result<(), String> {
-    let server = McpEdge::local(host.clone())?;
+    let server = McpEdge::local(host.clone(), grants)?;
     let incoming = FramedRead::new(
         input,
         JsonRpcMessageCodec::<ClientJsonRpcMessage>::new_with_max_length(MAX_FRAME),
@@ -707,7 +710,7 @@ mod port_contract_tests {
     #[tokio::test]
     async fn rejected_tool_arguments_reach_the_client_without_a_false_output_schema() {
         let (_directory, host) = host().await;
-        let edge = McpEdge::local(host.clone()).unwrap();
+        let edge = McpEdge::local(host.clone(), &LocalGrants::default()).unwrap();
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         let server =
             tokio::spawn(async move { edge.serve(server_io).await.unwrap().waiting().await });
@@ -738,7 +741,7 @@ mod port_contract_tests {
     #[tokio::test]
     async fn generic_aliases_and_versioned_routes_share_original_records_and_visibility() {
         let (_directory, host) = host().await;
-        let edge = McpEdge::local(host.clone()).unwrap();
+        let edge = McpEdge::local(host.clone(), &LocalGrants::default()).unwrap();
         let args = json!({"client_request_id":"once","arguments":{"scenario":"mcp","expected_head":null,"name":"MCP","instances":{},"providers":[],"layout":{"kind":"empty"}}});
         let record = call(&edge, "rho.scenarios.checkpoint.v1", args.clone())
             .await
