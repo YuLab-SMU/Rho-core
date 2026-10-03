@@ -5,6 +5,11 @@ CLI, HTTP and MCP edges. Scientific implementations live in
 [Rho-plugins](https://github.com/YuLab-SMU/Rho-plugins); the application shell and
 product assembly live in [Rho](https://github.com/YuLab-SMU/Rho).
 
+The pending [responsibility transfer requirements](docs/RESPONSIBILITY-TRANSFER.md)
+name the owners of development, presentation and draft capabilities leaving Core,
+and preserve original records, retained content and separate product acceptance.
+They document planned work, not implemented removals or completed migrations.
+
 ```sh
 cargo build --locked
 node scripts/check-boundaries.mjs
