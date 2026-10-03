@@ -132,24 +132,6 @@ pub struct ActivatePlugin {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields)]
-pub struct BranchPlugin {
-    pub revision: RevisionId,
-    pub name: String,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(deny_unknown_fields)]
-pub struct AdvancePluginBranch {
-    pub branch: BranchId,
-    pub expected: RevisionId,
-    pub next: RevisionId,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(deny_unknown_fields)]
-pub struct PluginBranchArguments {
-    pub branch: BranchId,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(deny_unknown_fields)]
 pub struct ComparePluginRevisions {
     pub before: RevisionId,
     pub after: RevisionId,

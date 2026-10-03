@@ -75,6 +75,30 @@ impl Session {
     }
 }
 
+#[test]
+fn ordinary_host_rejects_retired_development_work_without_recording_an_operation() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("catalog.sqlite");
+    let project = dir.path().join("project");
+    fs::create_dir(&project).unwrap();
+    let (mut session, ready) = Session::open(&db, &project, &[]);
+    let retired = [
+        "plugins.build", "plugins.branch", "plugins.advance_branch", "plugins.checkpoint",
+        "plugins.branches", "plugins.branch_head", "plugins.check_source",
+    ];
+    let capabilities = ready["capabilities"].as_array().unwrap();
+    for id in retired {
+        assert!(!capabilities.iter().any(|cap| cap["capability"]["id"] == id), "{id}");
+        let reply = session.invoke(id, id, json!({}));
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert!(reply["error"].as_str().unwrap().contains("not registered"), "{reply}");
+    }
+    let records = session.query("operation.list_recent", json!({}));
+    assert!(records["result"]["data"]["operations"].as_array().unwrap().is_empty(), "{records}");
+    assert!(!repository_path(&db).join("builds-v1").exists());
+    session.close();
+}
+
 /// The fixture publishes the Core context contract itself, so a change to the
 /// public type is exercised by real input validation rather than a copy.
 fn schema<T: schemars::JsonSchema>() -> Value {

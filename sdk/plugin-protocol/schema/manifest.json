@@ -296,7 +296,7 @@
       "type": "object",
       "properties": {
         "build": {
-          "description": "Executed only by an explicit development build, never by import or query.",
+          "description": "Descriptive metadata for external build tools. Core never executes it.",
           "anyOf": [
             {
               "$ref": "#/$defs/BuildRecipe"

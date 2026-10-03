@@ -1,5 +1,5 @@
 use clap::Subcommand;
-use rho_plugin_protocol::{BranchId, RevisionId};
+use rho_plugin_protocol::RevisionId;
 use rho_plugins::{PluginError, PluginRepository, read_archive, snapshot_directory};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -43,21 +43,9 @@ pub enum PluginCommand {
     Remove {
         revision: String,
     },
-    Branch {
-        revision: String,
-        name: String,
-    },
-    BranchHead {
-        branch: String,
-    },
     Diff {
         before: String,
         after: String,
-    },
-    AdvanceBranch {
-        branch: String,
-        expected: String,
-        next: String,
     },
     /// Validate package content without installing or executing it.
     Validate {
@@ -139,31 +127,9 @@ pub fn run(root: &Path, command: &PluginCommand) -> Result<Value, PluginError> {
             PluginRepository::open(root)?.remove(&RevisionId::new(revision)?)?;
             Ok(json!({"removed":revision}))
         }
-        PluginCommand::Branch { revision, name } => {
-            let revision = RevisionId::new(revision)?;
-            observe(root)?.inspect(&revision)?;
-            Ok(json!({"branch":PluginRepository::open(root)?.create_branch(&revision, name)?}))
-        }
-        PluginCommand::BranchHead { branch } => {
-            Ok(json!({"revision":observe(root)?.branch_head(&BranchId::new(branch)?)?}))
-        }
         PluginCommand::Diff { before, after } => Ok(json!(
             observe(root)?.compare(&RevisionId::new(before)?, &RevisionId::new(after)?)?
         )),
-        PluginCommand::AdvanceBranch {
-            branch,
-            expected,
-            next,
-        } => {
-            let branch = BranchId::new(branch)?;
-            observe(root)?.branch_head(&branch)?;
-            PluginRepository::open(root)?.advance_branch(
-                &branch,
-                &RevisionId::new(expected)?,
-                &RevisionId::new(next)?,
-            )?;
-            Ok(json!({"revision":next}))
-        }
         PluginCommand::Validate { archive } => {
             let package = read_archive(archive)?;
             Ok(json!({"revision":package.revision.id,"valid":true}))

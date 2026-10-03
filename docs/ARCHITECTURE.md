@@ -68,9 +68,10 @@ Later owner observations can improve understanding without rewriting that record
 
 ## Remaining responsibility cuts
 
-Test-project orchestration has left Core. Source branches and builds, scenarios,
-layout, visual models and edit drafts still have implementations in Core's plugin
-infrastructure. Their removal is separate work governed by
+Test-project orchestration, source branches, checkpoints and build execution have
+left Core. Development preview, scenarios, layout, visual models and edit drafts
+still have implementations in Core's plugin infrastructure. Their removal is
+separate work governed by
 [responsibility transfer requirements](RESPONSIBILITY-TRANSFER.md). Splitting Host
 modules does not claim these capabilities have moved or that consumers are integrated.
 

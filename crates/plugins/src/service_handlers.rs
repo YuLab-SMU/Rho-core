@@ -26,9 +26,6 @@ fn scenario_error(error_value: PluginError) -> OperationError {
 }
 fn source_error(value: PluginError) -> OperationError {
     match value {
-        PluginError::Conflict => {
-            OperationError::ContentChanged("plugin branch head changed".into())
-        }
         PluginError::Missing(id) => OperationError::NotFound(id),
         PluginError::Invalid(message) => invalid(message),
         PluginError::Contract(message) => invalid(message),
@@ -88,9 +85,6 @@ pub(crate) fn register(
         "plugins.resolve",
         "plugins.source_tree",
         "plugins.read_source",
-        "plugins.branches",
-        "plugins.check_source",
-        "plugins.branch_head",
         "plugins.compare",
     ] {
         registry.register_query(Arc::new(Read {
@@ -113,9 +107,6 @@ pub(crate) fn register(
         "plugins.preview",
         "plugins.release",
         "plugins.remove",
-        "plugins.branch",
-        "plugins.advance_branch",
-        "plugins.checkpoint",
         "plugins.reconcile_references",
     ] {
         registry.register(Arc::new(Manage {
@@ -381,34 +372,6 @@ fn descriptor(id: &str) -> host::CapabilityDescriptor {
             false,
             PLUGINS_READ_SCOPE,
         ),
-        "plugins.branches" => (
-            schema_for!(ListPluginBranches).to_value(),
-            schema_for!(PluginBranchPage).to_value(),
-            json!({"plugin":"example.plugin","after":null,"limit":20}),
-            "List a plugin's development branches and recorded origins",
-            false,
-            PLUGINS_READ_SCOPE,
-        ),
-        "plugins.check_source" | "plugins.checkpoint" => (
-            schema_for!(CheckpointPlugin).to_value(),
-            schema_for!(PluginCheckpoint).to_value(),
-            json!({"branch":"branch-example","expected_head":digest(),"changes":{}}),
-            "Validate source edits or atomically save them as a new branch checkpoint",
-            id == "plugins.checkpoint",
-            if id == "plugins.checkpoint" {
-                PLUGINS_WRITE_SCOPE
-            } else {
-                PLUGINS_READ_SCOPE
-            },
-        ),
-        "plugins.branch_head" => (
-            schema_for!(PluginBranchArguments).to_value(),
-            json!({"type":"object","properties":{"revision":{"type":"string"}},"required":["revision"],"additionalProperties":false}),
-            json!({"branch":"branch-example"}),
-            "Read a development branch's exact head",
-            false,
-            PLUGINS_READ_SCOPE,
-        ),
         "plugins.compare" => (
             schema_for!(ComparePluginRevisions).to_value(),
             schema_for!(RevisionDifference).to_value(),
@@ -449,22 +412,6 @@ fn descriptor(id: &str) -> host::CapabilityDescriptor {
             true,
             PLUGINS_WRITE_SCOPE,
         ),
-        "plugins.branch" => (
-            schema_for!(BranchPlugin).to_value(),
-            json!({"type":"object","properties":{"branch":{"type":"string"}},"required":["branch"],"additionalProperties":false}),
-            json!({"revision":digest(),"name":"Experiment"}),
-            "Branch an immutable plugin revision",
-            true,
-            PLUGINS_WRITE_SCOPE,
-        ),
-        "plugins.advance_branch" => (
-            schema_for!(AdvancePluginBranch).to_value(),
-            json!({"type":"object","properties":{"revision":{"type":"string"}},"required":["revision"],"additionalProperties":false}),
-            json!({"branch":"branch-example","expected":digest(),"next":digest()}),
-            "Advance a plugin branch by compare-and-swap",
-            true,
-            PLUGINS_WRITE_SCOPE,
-        ),
         "plugins.reconcile_references" => (
             schema_for!(Reconcile).to_value(),
             json!({"type":"object","properties":{"operation_id":{"type":"string"},"reconciled":{"const":true}},"required":["operation_id","reconciled"],"additionalProperties":false}),
@@ -481,17 +428,13 @@ fn descriptor(id: &str) -> host::CapabilityDescriptor {
         idempotency:if operation {host::IdempotencyClass::CallerScoped}else{host::IdempotencyClass::Pure},retry:if operation {host::RetryClass::ReconcileFirst}else{host::RetryClass::Safe},cancellation:host::CancellationClass::Unsupported,
         documentation:host::CapabilityDocumentation {
             summary:summary.into(),purpose:summary.into(),when_to_use:vec!["Manage or observe ordinary installed packages through the shared Host ports.".into()],
-            limitations:vec!["Installed source does not activate itself. Revisions, artifacts, project and principal identities remain explicit; no package origin receives special privileges.".into(),"Historical instance state does not establish a live process. Release failure or draining does not confirm cleanup; inspect the exact original instance.".into(),"Native artifacts and build scripts are trusted local code; process isolation is not an OS filesystem/network sandbox.".into()],
+            limitations:vec!["Installed source does not activate itself. Revisions, artifacts, project and principal identities remain explicit; no package origin receives special privileges.".into(),"Historical instance state does not establish a live process. Release failure or draining does not confirm cleanup; inspect the exact original instance.".into(),"Native artifacts are trusted local code; process isolation is not an OS filesystem/network sandbox.".into()],
             owner:"plugins".into(),effects:if operation {"Only the named package/lifecycle change. Scientific work and its journal remain with the existing Operation gateway.".into()}else{"Read-only bounded observation. Does not start a process, install, reconnect or recover work.".into()},
             retry_rule:if operation {"Retain client_request_id and inspect the original Operation after lost acknowledgement. Do not repeat activation to discover whether it started.".into()}else{"Repeat the same observation; follow explicit page cursors.".into()},
             cancellation_rule:"Disconnect does not undo lifecycle work or confirm process cleanup.".into(),preconditions:vec![],examples:vec![host::CapabilityExample{arguments:example,result_explanation:"Exact immutable identities and native lifecycle observations; no authority is inferred from package content.".into()}],
             related_capabilities:vec![key("plugins.list"),key("plugins.instances")],related_skills:vec![],position_units:vec!["Offsets and byte bounds are bytes, not tokens. Page item limits are 1–100.".into()],
         },
     };
-    if matches!(id, "plugins.check_source" | "plugins.checkpoint") {
-        descriptor.documentation.limitations.push("At most 128 edits and 128 KiB of decoded inline content per checkpoint; copy can reuse exact retained source, including larger files. Paths, manifest declarations and visual documents must validate. Invalid drafts remain the editor's responsibility.".into());
-        descriptor.documentation.effects = if operation { "Atomically store a source-only child and advance the expected branch head. Never reuse parent build artifacts, run a build, activate a provider, apply a scenario or replay scientific effects." } else { "Validate and return the proposed source identity only. The returned revision is not installed by this observation." }.into();
-    }
     if id == "workspace.paths" {
         descriptor.domain = "workspace".into();
         descriptor.documentation.owner = "workspace".into();
@@ -553,7 +496,6 @@ fn descriptor(id: &str) -> host::CapabilityDescriptor {
             "Open views through views.open or windows.open_view, close them and release the preview explicitly. A preview cannot satisfy a scenario runtime instance. Restart does not silently recreate its connection or fixtures.".into(),
         ];
         descriptor.documentation.related_capabilities = vec![
-            key("plugins.build"),
             key("views.open"),
             key("windows.open_view"),
             key("plugins.release"),
@@ -668,9 +610,6 @@ fn normalized(id: &str, value: &Value) -> Result<Value, OperationError> {
         "plugins.resolve" => normalize::<PluginResolveArguments>(value),
         "plugins.source_tree" => normalize::<ListPluginSource>(value),
         "plugins.read_source" => normalize::<ReadPluginSource>(value),
-        "plugins.branches" => normalize::<ListPluginBranches>(value),
-        "plugins.check_source" | "plugins.checkpoint" => normalize::<CheckpointPlugin>(value),
-        "plugins.branch_head" => normalize::<PluginBranchArguments>(value),
         "plugins.compare" => normalize::<ComparePluginRevisions>(value),
         "views.inspect" | "views.connection" | "views.presence" => {
             normalize::<PluginViewArguments>(value)
@@ -684,8 +623,6 @@ fn normalized(id: &str, value: &Value) -> Result<Value, OperationError> {
         "windows.update_layout" => normalize::<UpdatePluginWindowLayout>(value),
         "windows.open_view" => normalize::<OpenPluginWindowView>(value),
         "plugins.activate" => normalize::<ActivatePlugin>(value),
-        "plugins.branch" => normalize::<BranchPlugin>(value),
-        "plugins.advance_branch" => normalize::<AdvancePluginBranch>(value),
         "plugins.reconcile_references" => normalize::<Reconcile>(value),
         _ => unreachable!(),
     }
@@ -944,38 +881,6 @@ impl QueryHandler for Read {
                     .map_err(error)??
                 )
             }
-            "plugins.branches" => json!(
-                service
-                    .repository
-                    .lock()
-                    .unwrap()
-                    .branches(&decode::<ListPluginBranches>(value)?)
-                    .map_err(source_error)?
-            ),
-            "plugins.check_source" => {
-                let args: CheckpointPlugin = decode(value)?;
-                let service = service.clone();
-                json!(
-                    tokio::task::spawn_blocking(move || {
-                        let archive = service
-                            .repository
-                            .lock()
-                            .unwrap()
-                            .prepare_checkpoint(&args)
-                            .map_err(source_error)?;
-                        Ok::<_, OperationError>(PluginCheckpoint {
-                            branch: args.branch,
-                            revision: archive.revision.id,
-                            parent: args.expected_head,
-                        })
-                    })
-                    .await
-                    .map_err(error)??
-                )
-            }
-            "plugins.branch_head" => {
-                json!({"revision":service.repository.lock().unwrap().branch_head(&decode::<PluginBranchArguments>(value)?.branch).map_err(error)?})
-            }
             "plugins.compare" => {
                 let args: ComparePluginRevisions = decode(value)?;
                 json!(
@@ -1036,7 +941,6 @@ struct Bound {
     target: host::TargetRef,
     revision: Option<RevisionId>,
     grants: Vec<CapabilityRequirement>,
-    source_checkpoint: Option<Arc<PluginArchive>>,
 }
 struct Manage {
     service: Arc<PluginService>,
@@ -1066,14 +970,7 @@ impl OperationHandler for Manage {
             }))
     }
     fn execution_context(&self) -> Value {
-        let mut context =
-            json!({"managed_revision":self.bound.as_ref().and_then(|b|b.revision.as_ref())});
-        if let Some(bound) = &self.bound
-            && let Some(archive) = &bound.source_checkpoint
-        {
-            context["source_checkpoint"] = json!({"branch":bound.target.identity,"revision":archive.revision.id,"parent":archive.revision.parent});
-        }
-        context
+        json!({"managed_revision":self.bound.as_ref().and_then(|b|b.revision.as_ref())})
     }
     async fn bind(
         &self,
@@ -1083,12 +980,11 @@ impl OperationHandler for Manage {
     ) -> Result<Option<Arc<dyn OperationHandler>>, OperationError> {
         if !preconditions.is_empty() {
             return Err(invalid(
-                "plugin lifecycle uses exact artifact/instance/branch arguments, not unrelated native preconditions",
+                "plugin lifecycle uses exact artifact/instance arguments, not unrelated native preconditions",
             ));
         }
         let mut revision = None;
         let mut grants = vec![];
-        let mut source_checkpoint = None;
         let mut target = host::TargetRef {
             kind: "plugin_repository".into(),
             identity: self.service.scope.clone(),
@@ -1288,55 +1184,6 @@ impl OperationHandler for Manage {
                     identity: args.instance.instance.to_string(),
                 };
             }
-            "plugins.checkpoint" => {
-                let args: CheckpointPlugin = decode(value)?;
-                revision = Some(args.expected_head.clone());
-                target = host::TargetRef {
-                    kind: "plugin_branch".into(),
-                    identity: args.branch.to_string(),
-                };
-                let service = self.service.clone();
-                source_checkpoint = Some(Arc::new(
-                    tokio::task::spawn_blocking(move || {
-                        service
-                            .repository
-                            .lock()
-                            .unwrap()
-                            .prepare_checkpoint(&args)
-                            .map_err(source_error)
-                    })
-                    .await
-                    .map_err(error)??,
-                ));
-            }
-            "plugins.branch" => {
-                let args: BranchPlugin = decode(value)?;
-                if args.name.trim().is_empty() || args.name.len() > 128 {
-                    return Err(invalid("branch name must contain 1–128 UTF-8 bytes"));
-                }
-                self.service
-                    .repository
-                    .lock()
-                    .unwrap()
-                    .revision(&args.revision)
-                    .map_err(error)?;
-                revision = Some(args.revision);
-            }
-            "plugins.advance_branch" => {
-                let args: AdvancePluginBranch = decode(value)?;
-                if self
-                    .service
-                    .repository
-                    .lock()
-                    .unwrap()
-                    .branch_head(&args.branch)
-                    .map_err(error)?
-                    != args.expected
-                {
-                    return Err(OperationError::ContentChanged("branch head changed".into()));
-                }
-                revision = Some(args.next);
-            }
             "plugins.remove" => {
                 self.service
                     .repository
@@ -1360,7 +1207,6 @@ impl OperationHandler for Manage {
                 target,
                 revision,
                 grants,
-                source_checkpoint,
             }),
         })))
     }
@@ -1388,7 +1234,7 @@ impl OperationHandler for Manage {
     }
     async fn execute(&self, operation: &host::Operation) -> Result<CommitPlan, HandlerError> {
         self.run(operation).await.map(CommitPlan::succeeded).map_err(|error| {
-            if matches!(self.id, "windows.update_layout" | "windows.open_view" | "views.close" | "scenarios.checkpoint" | "scenarios.apply" | "plugins.checkpoint") && matches!(&error,
+            if matches!(self.id, "windows.update_layout" | "windows.open_view" | "views.close" | "scenarios.checkpoint" | "scenarios.apply") && matches!(&error,
                 OperationError::ContentChanged(_) | OperationError::InvalidInput(_) | OperationError::NotFound(_)) {
                 return HandlerError::before_effect(error.to_string());
             }
@@ -1672,40 +1518,6 @@ impl Manage {
                         other => error(other),
                     })?;
                 Ok(json!({"removed":args.revision}))
-            }
-            "plugins.checkpoint" => {
-                let args: CheckpointPlugin = decode(value)?;
-                let archive = bound
-                    .source_checkpoint
-                    .clone()
-                    .ok_or_else(|| error("source checkpoint was not prepared"))?;
-                let service = service.clone();
-                Ok(json!(
-                    tokio::task::spawn_blocking(move || service
-                        .repository
-                        .lock()
-                        .unwrap()
-                        .commit_checkpoint(&args, &archive)
-                        .map_err(source_error))
-                    .await
-                    .map_err(error)??
-                ))
-            }
-            "plugins.branch" => {
-                let args: BranchPlugin = decode(value)?;
-                Ok(
-                    json!({"branch":service.repository.lock().unwrap().create_branch(&args.revision,&args.name).map_err(error)?}),
-                )
-            }
-            "plugins.advance_branch" => {
-                let args: AdvancePluginBranch = decode(value)?;
-                service
-                    .repository
-                    .lock()
-                    .unwrap()
-                    .advance_branch(&args.branch, &args.expected, &args.next)
-                    .map_err(error)?;
-                Ok(json!({"revision":args.next}))
             }
             "plugins.reconcile_references" => {
                 let args: Reconcile = decode(value)?;

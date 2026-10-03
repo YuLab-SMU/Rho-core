@@ -46,19 +46,20 @@ fn scenario_request(name: &str) -> SaveScenario {
 }
 
 #[test]
-fn fresh_catalog_has_no_development_test_project_storage() {
+fn fresh_catalog_has_no_development_storage() {
     let temp = tempfile::tempdir().unwrap();
     let repo = PluginRepository::open(temp.path()).unwrap();
     let connection = rusqlite::Connection::open(repo.root().join("catalog-v1.sqlite3")).unwrap();
     let tables: u32 = connection
         .query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE name = 'plugin_test_projects'",
+            "SELECT count(*) FROM sqlite_schema WHERE name IN ('plugin_test_projects','branches','plugin_branch_origins')",
             [],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!(tables, 0);
     assert!(!repo.root().join("test-projects-v1").exists());
+    assert!(!repo.root().join("builds-v1").exists());
 }
 
 #[test]
@@ -432,13 +433,7 @@ fn every_reference_blocks_removal_and_query_never_creates_storage() {
     let archive = snapshot_directory(temp.path(), None, "ui-web").unwrap();
     let mut repo = PluginRepository::open(&temp.path().join("store")).unwrap();
     repo.import(&archive).unwrap();
-    for kind in [
-        "instance",
-        "operation",
-        "scenario",
-        "document",
-        "checkpoint",
-    ] {
+    for kind in ["instance", "operation", "scenario", "document"] {
         repo.retain(kind, "original-identity", &archive.revision.id)
             .unwrap();
         match repo.remove(&archive.revision.id).unwrap_err() {
@@ -456,19 +451,12 @@ fn every_reference_blocks_removal_and_query_never_creates_storage() {
 }
 
 #[test]
-fn branch_checkpoint_compare_and_stale_update_keep_original_revision() {
+fn immutable_package_compare_keeps_original_revision() {
     let temp = tempfile::tempdir().unwrap();
     fixture(temp.path());
     let original = snapshot_directory(temp.path(), None, "ui-web").unwrap();
     let mut repo = PluginRepository::open(&temp.path().join("store")).unwrap();
     repo.import(&original).unwrap();
-    let branch = repo
-        .create_branch(&original.revision.id, "My controls")
-        .unwrap();
-    assert!(matches!(
-        repo.remove(&original.revision.id),
-        Err(PluginError::Referenced(_))
-    ));
     fs::write(
         temp.path().join("src/view.ts"),
         "document.body.textContent = 'Modified';",
@@ -477,13 +465,6 @@ fn branch_checkpoint_compare_and_stale_update_keep_original_revision() {
     let changed =
         snapshot_directory(temp.path(), Some(original.revision.id.clone()), "ui-web").unwrap();
     repo.import(&changed).unwrap();
-    repo.advance_branch(&branch, &original.revision.id, &changed.revision.id)
-        .unwrap();
-    assert!(matches!(
-        repo.advance_branch(&branch, &original.revision.id, &changed.revision.id),
-        Err(PluginError::Conflict)
-    ));
-    assert_eq!(repo.branch_head(&branch).unwrap(), changed.revision.id);
     let difference = repo
         .compare(&original.revision.id, &changed.revision.id)
         .unwrap();

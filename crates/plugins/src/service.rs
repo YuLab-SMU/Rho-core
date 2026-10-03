@@ -51,7 +51,6 @@ pub struct PluginService {
     pub(crate) registry: OnceLock<Weak<CapabilityRegistry>>,
     pub(crate) journal: Arc<dyn OperationJournal>,
     pub(crate) gate: tokio::sync::Mutex<()>,
-    pub(crate) build_capacity: Arc<tokio::sync::Semaphore>,
     pub(crate) services: Arc<Services>,
     published: Mutex<Vec<CapabilityContribution>>,
     stopped: tokio_util::sync::CancellationToken,
@@ -118,7 +117,6 @@ impl PluginService {
             registry: OnceLock::new(),
             journal,
             gate: tokio::sync::Mutex::new(()),
-            build_capacity: Arc::new(tokio::sync::Semaphore::new(1)),
             services,
             published: Mutex::new(vec![]),
             stopped: tokio_util::sync::CancellationToken::new(),
@@ -131,7 +129,6 @@ impl PluginService {
     ) -> Result<(), OperationError> {
         crate::service_handlers::register(self, registry)?;
         crate::view_renderer::register(self, registry)?;
-        crate::build_service::register(self, registry)?;
         crate::draft_service::register(self, registry)?;
         crate::archive_service::register(self, registry)
     }
@@ -292,26 +289,6 @@ impl PluginService {
             "plugins.archive_import" | "plugins.archive_export"
         ) {
             self.complete_archive(record)?;
-        } else if record.operation.capability.id == "plugins.build" {
-            if record.status == host::OperationStatus::Uncertain {
-                return Err(error(
-                    "Native build settlement is uncertain; retain its evidence and source protection. Reference reconciliation cannot confirm process cleanup.",
-                ));
-            }
-            let revision = admission
-                .owner_context
-                .get("build_revision")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("original build revision is missing"))?;
-            self.repository
-                .lock()
-                .unwrap()
-                .release_reference(
-                    "build",
-                    record.operation.operation_id.as_str(),
-                    &RevisionId::new(revision).map_err(error)?,
-                )
-                .map_err(error)?;
         } else if record.operation.domain == "plugins"
             && let Some(revision) = admission
                 .owner_context

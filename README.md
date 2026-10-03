@@ -10,8 +10,9 @@ ownership, Host entry points and the shared execution lifetime.
 
 The [responsibility transfer requirements](docs/RESPONSIBILITY-TRANSFER.md) name
 the owners of development, presentation and draft capabilities leaving Core.
-Development test-project orchestration has been removed; the other cuts remain
-planned. This breaking upgrade uses fresh projects and storage. Old projects,
+Development test-project orchestration, editable source branches, checkpoints and
+build execution have been removed. Presentation and draft cuts remain planned.
+This breaking upgrade uses fresh projects and storage. Old projects,
 directories and history are not migration or recovery requirements. New Operations
 still retain their original requests, outcomes and uncertainty.
 
@@ -40,6 +41,11 @@ and end its process explicitly. Core has no test-project manager, child Host
 selector, dedicated test-project storage or child workspace navigation. Retired
 CLI, frame, HTTP header and view selectors fail instead of calling the current
 project. No legacy migration or test-history recovery service remains.
+
+Core accepts existing immutable package content. It does not run a package build
+recipe, maintain editable source heads or manage build directories. Package source
+listing, bounded reads and immutable revision comparison remain read-only. Source
+and build metadata describe package provenance; they do not authorize execution.
 
 Context search and references are windowless: an external caller addresses the
 provider and its owner-defined selector directly. `cargo test -p rho-cli --test

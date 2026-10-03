@@ -29,8 +29,8 @@ The existing manifest cancellation contract does not change. See the
 capabilities, views, context readers and the optional native entrypoint. There is
 no bundled/trusted/origin permission flag. All entrypoints live in `dist/`.
 First-party source paths, dependency lockfiles and build instructions are required.
-An explicit build command is an executable plus literal arguments; import never
-executes it or installs a toolchain.
+A declared build command is metadata for external tools. Core never executes
+it or installs a toolchain.
 
 A `PluginRevision` hashes its parent, manifest and source inventory. A
 `BuildArtifact` separately hashes its source revision, target and artifact
@@ -107,27 +107,17 @@ instance. A stored `PluginInstanceObservation` does not establish process livene
 check `observed_in_this_host` together with its lifecycle state. Instance pages
 are scoped to the current project and original principal before pagination.
 
-Source editing is available to ordinary plugins through `plugins.source_tree`,
-`plugins.read_source`, `plugins.branches` and `plugins.check_source` queries
-(`plugins.read`), and `plugins.checkpoint` Operations (`plugins.write`). The
-`ListPluginSource` / `PluginSourcePage` pair pages at most 100 file identities.
-`ReadPluginSource` / `PluginSourceChunk` addresses exact revision/path bytes,
-returns at most 65,536 binary-safe bytes, and verifies the full stored file digest.
-The read does not allow artifact paths. `PluginBranchPage` preserves unknown origins
-as null rather than inventing history.
+Immutable packaged source is available through `plugins.source_tree` and
+`plugins.read_source` queries (`plugins.read`). `ListPluginSource` /
+`PluginSourcePage` pages at most 100 file identities. `ReadPluginSource` /
+`PluginSourceChunk` addresses exact revision/path bytes, returns at most 65,536
+binary-safe bytes and verifies the full stored file digest. Artifact paths are
+not source reads. `plugins.compare` compares two installed immutable revisions.
 
-`CheckpointPlugin` contains `branch`, `expected_head` and path-keyed `changes`:
-`put` (base64 bytes plus executable flag), `remove`, or `copy` (exact retained
-source revision/path). Limits are 128 edits, 128 KiB of decoded inline content,
-and 256 KiB for the whole request. Large retained files can be copied without inline
-encoding. Complete manifest declarations, schemas, paths and visual documents must
-validate; language compilation belongs to an explicit build. The pure check
-returns a proposed `PluginCheckpoint` identity without installing it. Saving
-atomically stores the source-only child and advances the expected branch head;
-parent build artifacts stay attached to the parent. A restore creates another
-child. Neither check nor save starts a provider, runs code, applies a scenario or
-replays scientific effects. Ordinary request identity and original-operation
-recovery rules apply to the save.
+Core has no editable source branches, checkpoint calls, build execution or build
+queue. External tools or Studio own those workflows. Core checks existing package
+identities and artifacts; source build recipes are descriptive metadata only.
+Removed development contracts are absent from the SDK inventory.
 
 `plugins.preview@1` accepts `PreviewPlugin` and returns an ordinary
 `PluginInstanceObservation` with `purpose:"fixture_preview"`. It requires
@@ -353,8 +343,7 @@ or replaced calling view fails instead of falling back to another identity.
 The query accepts no selector, opens nothing and returns no call or asset token.
 This observation cannot authorize a later request or prove continuing liveness;
 owners must revalidate their original controller when admitting later writes.
-Native backends and build scripts are
-trusted local code: this is UI, failure and lifetime isolation, not an OS sandbox.
+Native backends are trusted local code: this is UI, failure and lifetime isolation, not an OS sandbox.
 
 ## Scenarios and visual source
 

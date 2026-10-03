@@ -23,7 +23,7 @@ pub fn builtin_documentation(id: &str) -> CapabilityDocumentation {
         "host.core_contract" => (
             "Inspect a native Host port contract",
             "Read the exact native Host capability kind, input schema and required scopes in this project. Requires plugins.read for metadata only; inspecting a write contract does not grant it or invoke it. Dynamic plugin contributions are excluded and require their original provider bindings and immutable manifest inspection. This observation starts no runtime and performs no recovery.",
-            json!({"capability":{"id":"plugins.branch","version":1}}),
+            json!({"capability":{"id":"plugins.activate","version":1}}),
         ),
         "operation.list_recent" => (
             "Find recorded operations",

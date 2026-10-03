@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_out_dir(root.join("types"))
         .with_large_int("number");
     OperationId::export_all(&types)?;
+    ProcessReport::export_all(&types)?;
     PluginArchive::export_all(&types)?;
     StagePluginArchive::export_all(&types)?;
     PluginArchiveDiscarded::export_all(&types)?;
@@ -47,9 +48,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     PluginResolveArguments::export_all(&types)?;
     ActivatePlugin::export_all(&types)?;
     ResumePlugin::export_all(&types)?;
-    BranchPlugin::export_all(&types)?;
-    AdvancePluginBranch::export_all(&types)?;
-    PluginBranchArguments::export_all(&types)?;
     ComparePluginRevisions::export_all(&types)?;
     ResourceInspect::export_all(&types)?;
     ResourceList::export_all(&types)?;
@@ -101,13 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     PluginSourcePage::export_all(&types)?;
     ReadPluginSource::export_all(&types)?;
     PluginSourceChunk::export_all(&types)?;
-    ListPluginBranches::export_all(&types)?;
-    PluginBranchPage::export_all(&types)?;
-    CheckpointPlugin::export_all(&types)?;
-    PluginCheckpoint::export_all(&types)?;
-    BuildPlugin::export_all(&types)?;
     PreviewPlugin::export_all(&types)?;
-    PluginBuildResult::export_all(&types)?;
     VisualDocument::export_all(&types)?;
     fs::create_dir_all(root.join("schema"))?;
     for (name, schema) in [
@@ -127,22 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "plugin-source-chunk",
             schemars::schema_for!(PluginSourceChunk),
         ),
-        (
-            "list-plugin-branches",
-            schemars::schema_for!(ListPluginBranches),
-        ),
-        (
-            "plugin-branch-page",
-            schemars::schema_for!(PluginBranchPage),
-        ),
-        ("build-plugin", schemars::schema_for!(BuildPlugin)),
         ("preview-plugin", schemars::schema_for!(PreviewPlugin)),
-        (
-            "plugin-build-result",
-            schemars::schema_for!(PluginBuildResult),
-        ),
-        ("checkpoint-plugin", schemars::schema_for!(CheckpointPlugin)),
-        ("plugin-checkpoint", schemars::schema_for!(PluginCheckpoint)),
         (
             "project-read-coverage",
             schemars::schema_for!(ProjectReadCoverage),

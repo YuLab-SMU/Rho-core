@@ -8,6 +8,6 @@ export type SourceDeclaration = {
  */
 files: Array<PackagePath>, lockfiles: Array<PackagePath>, build_instructions: PackagePath,
 /**
- * Executed only by an explicit development build, never by import or query.
+ * Descriptive metadata for external build tools. Core never executes it.
  */
 build: BuildRecipe | null, };

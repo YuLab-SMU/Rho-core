@@ -98,29 +98,7 @@ async function prompt(message) {
     pending = null;
     return;
   }
-  if (fs.existsSync(path.join(cwd, 'native-studio-input.json'))) {
-    await require('./agent-studio-tools.cjs')({cwd, sendRequest, catalog, rpc, save, session, prompts});
-    send({jsonrpc:'2.0', method:'session/update', params:{sessionId:session, update:{sessionUpdate:'agent_message_chunk', content:{type:'text', text:'The selected Studio branch has a new checkpoint. Build and preview it in Studio.'}}}});
-    result(id, {stopReason:'end_turn'});
-    pending = null;
-    return;
-  }
-  if (fs.existsSync(path.join(cwd, 'native-core-input.json'))) {
-    await require('./agent-core-tools.cjs')({cwd, sendRequest, catalog, rpc, save, session, prompts});
-    result(id, {stopReason:'end_turn'});
-    pending = null;
-    return;
-  }
-  assert.equal(catalog.structuredContent.tools.length, 1);
-  assert.equal(catalog.structuredContent.tools[0].selection.name, 'execute');
-  const input = JSON.parse(fs.readFileSync(path.join(cwd, 'native-science-input.json'), 'utf8'));
-  const invocation = {send_request:sendRequest, tool_request:randomUUID(), tool:'execute', arguments:input, preconditions:null};
-  const evidence = {session, prompts, invocation, attachments, contexts};
-  save(evidence);
-  const original = await rpc('tools/call', {name:'rho_call', arguments:invocation});
-  assert.notEqual(original.isError, true);
-  assert.equal(original.structuredContent.result.status, 'succeeded');
-  const stopped = pending !== id;
+
   if (!stopped) {
     assert.deepEqual(await rpc('tools/call', {name:'rho_call', arguments:invocation}), original);
     const history = path.join(cwd, 'native-science-history.json');

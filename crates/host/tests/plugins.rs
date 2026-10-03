@@ -850,7 +850,7 @@ async fn activation_rejects_scope_escalation_and_collisions_without_publishing_p
         .unwrap();
     let context = NextHost::local_context();
     let mut limited = context.clone();
-    limited.scopes.remove("plugins.write");
+    limited.scopes.remove("plugins.read");
     assert!(matches!(
         host.invoke(
             &limited,
@@ -922,10 +922,10 @@ async fn backend_delegation_uses_shared_query_and_operation_ports() {
         delegated["delegated"]["result"]["data"]["total"], 1,
         "{delegated}"
     );
-    let denied=query(&host,&context,"fixture.read",json!({"binding":binding,"arguments":{"action":"delegate_branch","host_arguments":{"revision":archive.revision.id,"name":"forbidden query mutation"}},"preconditions":{}})).await;
+    let denied=query(&host,&context,"fixture.read",json!({"binding":binding,"arguments":{"action":"delegate_mutation","host_arguments":activation(&archive,"forbidden-query-mutation")},"preconditions":{}})).await;
     assert_eq!(denied["delegated"]["code"], "host_call_failed");
     let binding=query(&host,&context,"plugins.resolve",json!({"capability":{"id":"fixture.run","version":1},"instance":instance.instance.identity})).await;
-    let result=run(&host,&context,"parent","fixture.run",json!({"binding":binding,"arguments":{"action":"delegate_operation","host_arguments":{"revision":archive.revision.id,"name":"Native delegated branch"}},"preconditions":{}})).await;
+    let result=run(&host,&context,"parent","fixture.run",json!({"binding":binding,"arguments":{"action":"delegate_operation","host_arguments":activation(&archive,"delegated-child")},"preconditions":{}})).await;
     assert_eq!(
         result.status,
         OperationStatus::Succeeded,
@@ -941,14 +941,9 @@ async fn backend_delegation_uses_shared_query_and_operation_ports() {
     );
     assert_eq!(child["operation"]["caller"]["kind"], "plugin");
     assert_eq!(child["operation"]["principal"], json!(context.caller));
+    assert_eq!(child["operation"]["capability"]["id"], "plugins.activate");
     assert_eq!(
-        query(
-            &host,
-            &context,
-            "plugins.branch_head",
-            json!({"branch":child["output"]["branch"]})
-        )
-        .await["revision"],
+        child["output"]["instance"]["identity"]["revision"],
         json!(archive.revision.id)
     );
     host.drain().await;
@@ -2136,8 +2131,8 @@ async fn closing_a_view_does_not_cancel_or_retarget_its_accepted_native_operatio
         &host,
         &context,
         "foreign-read",
-        "plugins.branch",
-        json!({"revision":ui.revision.id,"name":"branch"}),
+        "plugins.activate",
+        json!({"revision":ui.revision.id,"artifact":ui.artifacts[0].id,"target":"ui-web","alias":"foreign-instance","configuration":{}}),
     )
     .await;
     assert!(

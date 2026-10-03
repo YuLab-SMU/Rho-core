@@ -38,8 +38,6 @@ impl PluginRepository {
             CREATE TABLE IF NOT EXISTS artifact_files(artifact TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE, path TEXT NOT NULL, digest TEXT NOT NULL REFERENCES blobs(digest), PRIMARY KEY(artifact,path));
             CREATE TABLE IF NOT EXISTS revision_refs(owner_kind TEXT NOT NULL, owner TEXT NOT NULL, revision TEXT NOT NULL, PRIMARY KEY(owner_kind,owner,revision));
             CREATE INDEX IF NOT EXISTS revision_refs_target ON revision_refs(revision);
-            CREATE TABLE IF NOT EXISTS branches(id TEXT PRIMARY KEY, plugin TEXT NOT NULL, head TEXT NOT NULL REFERENCES revisions(id), name TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS plugin_branch_origins(branch TEXT PRIMARY KEY REFERENCES branches(id), revision TEXT NOT NULL REFERENCES revisions(id));
             CREATE TABLE IF NOT EXISTS plugin_instances(id TEXT PRIMARY KEY, document TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS plugin_instance_activations(id TEXT PRIMARY KEY REFERENCES plugin_instances(id), document TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS plugin_views(id TEXT PRIMARY KEY, project TEXT NOT NULL, principal TEXT NOT NULL, document TEXT NOT NULL);
@@ -322,10 +320,8 @@ impl PluginRepository {
                     | "view"
                     | "operation"
                     | "management"
-                    | "build"
                     | "scenario"
                     | "document"
-                    | "checkpoint"
                     | "archive_export"
                     | "archive_import"
             ),
@@ -370,10 +366,8 @@ impl PluginRepository {
                     | "view"
                     | "operation"
                     | "management"
-                    | "build"
                     | "scenario"
                     | "document"
-                    | "checkpoint"
                     | "archive_export"
                     | "archive_import"
             ),
@@ -383,92 +377,6 @@ impl PluginRepository {
             "DELETE FROM revision_refs WHERE owner_kind=? AND owner=? AND revision=?",
             params![owner_kind, owner, revision.as_str()],
         )?;
-        Ok(())
-    }
-
-    pub fn create_branch(
-        &mut self,
-        from: &RevisionId,
-        name: &str,
-    ) -> Result<BranchId, PluginError> {
-        ensure(
-            !name.trim().is_empty() && name.len() <= 128 && !name.chars().any(char::is_control),
-            "invalid branch name",
-        )?;
-        let revision = self.revision(from)?;
-        let id = BranchId::new(uuid::Uuid::new_v4().to_string())?;
-        let transaction = self
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        transaction.execute(
-            "INSERT INTO branches VALUES(?,?,?,?)",
-            params![
-                id.as_str(),
-                revision.manifest.id.as_str(),
-                from.as_str(),
-                name
-            ],
-        )?;
-        transaction.execute(
-            "INSERT INTO revision_refs VALUES('branch',?,?)",
-            params![id.as_str(), from.as_str()],
-        )?;
-        transaction.execute(
-            "INSERT INTO plugin_branch_origins VALUES(?,?)",
-            params![id.as_str(), from.as_str()],
-        )?;
-        transaction.commit()?;
-        Ok(id)
-    }
-
-    pub fn branch_head(&self, branch: &BranchId) -> Result<RevisionId, PluginError> {
-        let head: String = self
-            .connection
-            .query_row(
-                "SELECT head FROM branches WHERE id=?",
-                [branch.as_str()],
-                |r| r.get(0),
-            )
-            .optional()?
-            .ok_or_else(|| PluginError::Missing(branch.to_string()))?;
-        Ok(RevisionId::new(head)?)
-    }
-
-    pub fn advance_branch(
-        &mut self,
-        branch: &BranchId,
-        expected: &RevisionId,
-        next: &RevisionId,
-    ) -> Result<(), PluginError> {
-        let next_revision = self.revision(next)?;
-        ensure(
-            next_revision.parent.as_ref() == Some(expected),
-            "checkpoint parent must match the branch head",
-        )?;
-        let transaction = self
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let changed = transaction.execute(
-            "UPDATE branches SET head=? WHERE id=? AND head=? AND plugin=?",
-            params![
-                next.as_str(),
-                branch.as_str(),
-                expected.as_str(),
-                next_revision.manifest.id.as_str()
-            ],
-        )?;
-        if changed != 1 {
-            return Err(PluginError::Conflict);
-        }
-        transaction.execute(
-            "DELETE FROM revision_refs WHERE owner_kind='branch' AND owner=?",
-            [branch.as_str()],
-        )?;
-        transaction.execute(
-            "INSERT INTO revision_refs VALUES('branch',?,?)",
-            params![branch.as_str(), next.as_str()],
-        )?;
-        transaction.commit()?;
         Ok(())
     }
 
@@ -580,7 +488,7 @@ pub(crate) fn store_archive(
             )?;
         }
     }
-    // Repeated builds/imports must leave one exportable package, rather than
+    // Repeated imports must leave one exportable package, rather than
     // individually valid artifacts accumulating beyond the archive quota. Check
     // the complete retained inventory inside the same rollback-capable transaction.
     let documents = transaction

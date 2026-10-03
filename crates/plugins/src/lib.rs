@@ -4,9 +4,6 @@
 mod archive_service;
 mod archives;
 mod backend;
-mod build;
-mod build_service;
-mod development;
 mod instance_records;
 mod instance_recovery;
 mod operations;
@@ -14,6 +11,7 @@ mod package;
 mod repository;
 mod resources;
 mod runtime;
+mod source;
 pub use resources::*;
 mod preview;
 #[cfg(unix)]

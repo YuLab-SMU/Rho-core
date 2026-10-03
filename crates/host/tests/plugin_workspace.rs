@@ -99,7 +99,6 @@ fn generic_capabilities(host: &NextHost) -> BTreeSet<String> {
     for id in [
         "plugins.list",
         "plugins.activate",
-        "plugins.build",
         "plugins.preview",
         "operation.get",
         "operation.list_recent",
@@ -159,13 +158,7 @@ async fn native_contract_metadata_is_exact_readonly_scoped_and_excludes_plugins(
     let mut reader = admin.clone();
     reader.scopes = BTreeSet::from(["plugins.read".into()]);
     let before = query(&host, &admin, "operation.list_recent", json!({"limit":100})).await;
-    for id in [
-        "plugins.list",
-        "plugins.branch",
-        "plugins.build",
-        "plugins.preview",
-        "scenarios.apply",
-    ] {
+    for id in ["plugins.list", "plugins.preview", "scenarios.apply"] {
         let key = CapabilityRef::new(id, 1).unwrap();
         let expected = host
             .capabilities()
@@ -219,15 +212,15 @@ async fn native_contract_metadata_is_exact_readonly_scoped_and_excludes_plugins(
             &denied,
             QueryRequest {
                 capability: CapabilityRef::new("host.core_contract", 1).unwrap(),
-                arguments: json!({"capability":{"id":"plugins.branch","version":1}}),
+                arguments: json!({"capability":{"id":"plugins.activate","version":1}}),
             }
         )
         .await,
         Err(OperationError::AccessDenied { .. })
     ));
     for arguments in [
-        json!({"capability":{"id":"plugins.branch","version":1},"project":"foreign"}),
-        json!({"capability":{"id":"plugins.branch","version":65536}}),
+        json!({"capability":{"id":"plugins.activate","version":1},"project":"foreign"}),
+        json!({"capability":{"id":"plugins.activate","version":65536}}),
     ] {
         assert!(
             host.query_snapshot(
@@ -247,7 +240,7 @@ async fn native_contract_metadata_is_exact_readonly_scoped_and_excludes_plugins(
         ("fixture.run", 1),
         ("fixture.answer", 2),
         ("missing.port", 1),
-        ("plugins.branch", 2),
+        ("plugins.activate", 2),
     ] {
         assert!(
             matches!(
@@ -267,30 +260,24 @@ async fn native_contract_metadata_is_exact_readonly_scoped_and_excludes_plugins(
     let read = binding(&host, &reader, &instance, "fixture.read").await;
     let before_read = query(&host, &admin, "operation.list_recent", json!({"limit":100})).await;
     let delegated = query(&host, &reader, "fixture.read", json!({
-        "binding":read,"arguments":{"action":"delegate","host_arguments":{"capability":{"id":"plugins.branch","version":1}}}
+        "binding":read,"arguments":{"action":"delegate","host_arguments":{"capability":{"id":"plugins.activate","version":1}}}
     })).await;
     assert_eq!(delegated["delegated"]["result"]["status"], "ready");
     assert_eq!(
         delegated["delegated"]["result"]["data"]["capability"],
-        json!({"id":"plugins.branch","version":1})
+        json!({"id":"plugins.activate","version":1})
     );
     assert_eq!(
         delegated["delegated"]["result"]["data"]["required_scopes"],
-        json!(["plugins.write"])
+        json!(["plugins.run"])
     );
     assert_eq!(
         query(&host, &admin, "operation.list_recent", json!({"limit":100})).await,
         before_read
     );
     assert_eq!(
-        query(
-            &host,
-            &admin,
-            "plugins.branches",
-            json!({"plugin":package.revision.manifest.id,"after":null,"limit":20})
-        )
-        .await["branches"],
-        json!([])
+        query(&host, &admin, "plugins.instances", json!({"limit":20})).await["total"],
+        1
     );
     no_scientific_stores(database.parent().unwrap());
     host.drain().await;

@@ -11,7 +11,7 @@ pub fn package(path: &Path, version: &str, collision: bool) -> PluginArchive {
         .replace("\"host.echo\"", "\"plugins.list\"")
         .replace(
             "else \"plugins.list\"",
-            "else \"plugins.branch\" if action == \"delegate_branch\" else \"plugins.list\"",
+            "else \"plugins.activate\" if action == \"delegate_mutation\" else \"plugins.list\"",
         )
         .replace(
             "\"arguments\": args})",
@@ -23,7 +23,7 @@ pub fn package(path: &Path, version: &str, collision: bool) -> PluginArchive {
             host_request = "backend-" + request
             reverse[host_request] = (request, data)
             send(host_request, "host_call", {"parent_request":request,
-                "capability":{"id":"plugins.branch","version":1},
+                "capability":{"id":"plugins.activate","version":1},
                 "arguments":data["arguments"]["host_arguments"]})
         elif action in ("commit", "badfact", "evidence"):"#,
         )
@@ -73,7 +73,7 @@ pub fn package(path: &Path, version: &str, collision: bool) -> PluginArchive {
         "source":{"files":["backend.py"],"lockfiles":["deps.lock"],"build_instructions":"BUILD.md","build":null},
         "dependencies":{},"requires":[
             {"capability":{"id":"plugins.list","version":1},"scopes":["plugins.read"]},
-            {"capability":{"id":"plugins.branch","version":1},"scopes":["plugins.write"]}],
+            {"capability":{"id":"plugins.activate","version":1},"scopes":["plugins.run","plugins.read"]}],
         "views":[],"contexts":[],"backend":{"executable":"dist/backend","arguments":[]},
         "capabilities":[capability(if collision {"plugins.list"}else{"fixture.read"},"query","plugins.read",json!([]),"unsupported"),
             capability("fixture.run","operation","plugins.run",json!(["fixture.write"]),"request"), control],
