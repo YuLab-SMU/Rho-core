@@ -6,7 +6,7 @@
     "mode": {
       "$ref": "#/$defs/PluginViewCloseMode",
       "default": {
-        "kind": "flush"
+        "kind": "cooperate"
       }
     },
     "view": {
@@ -21,12 +21,12 @@
     "PluginViewCloseMode": {
       "oneOf": [
         {
-          "description": "Ask the connected view to flush its draft before native closure.",
+          "description": "Each registered participant confirms its owner-defined preparation.",
           "type": "object",
           "properties": {
             "kind": {
               "type": "string",
-              "const": "flush"
+              "const": "cooperate"
             }
           },
           "additionalProperties": false,
@@ -35,23 +35,23 @@
           ]
         },
         {
-          "description": "Explicit recovery when cooperation is unavailable. Keeps exactly this\nacknowledged version; does not claim that local edits have been saved.",
+          "description": "Explicitly detach this observed connection, or a retained detached view.\nThis does not establish that content was saved or native work stopped.",
           "type": "object",
           "properties": {
-            "expected_version": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
+            "connection": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "kind": {
               "type": "string",
-              "const": "retain_acknowledged"
+              "const": "disconnect"
             }
           },
           "additionalProperties": false,
           "required": [
-            "kind",
-            "expected_version"
+            "kind"
           ]
         }
       ]

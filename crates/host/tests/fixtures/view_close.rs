@@ -93,12 +93,20 @@ async fn settled(
 }
 
 #[tokio::test]
-async fn flush_close_requires_each_document_and_releases_references_atomically() {
+async fn close_requires_owner_preparation_and_preserves_authority_and_atomic_release() {
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path().join("project");
     fs::create_dir(&project).unwrap();
     let db = temp.path().join("state.sqlite");
-    let archive = ui_package(&temp.path().join("ui"));
+    let package = temp.path().join("ui");
+    ui_package(&package);
+    let file = package.join("plugin.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    manifest["requires"].as_array_mut().unwrap().push(
+        json!({"capability":{"id":"plugins.archive_export","version":1},"scopes":["plugins.read"]}),
+    );
+    fs::write(file, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let archive = rho_plugins::snapshot_directory(&package, None, "ui-web").unwrap();
     let mut repository = PluginRepository::open(&repository_path(&db)).unwrap();
     repository.import(&archive).unwrap();
     let host = NextHost::open_plugin_workspace(&db, &project)
@@ -112,12 +120,21 @@ async fn flush_close_requires_each_document_and_releases_references_atomically()
             "activate",
             "plugins.activate",
             json!({"revision":archive.revision.id,
-        "artifact":archive.artifacts[0].id,"target":"ui-web","alias":"flush","configuration":{}}),
+        "artifact":archive.artifacts[0].id,"target":"ui-web","alias":"close","configuration":{}}),
         )
         .await,
     );
-    let opened = run(&host, &context, "open", "views.open", json!({"instance":instance.instance.identity,
-        "contribution":"view","window":"flush-window","configuration":{},"state":{"text":"acknowledged"}})).await.output.unwrap();
+    let opened = run(
+        &host,
+        &context,
+        "open",
+        "views.open",
+        json!({"instance":instance.instance.identity,
+        "contribution":"view","window":"close-window","configuration":{}}),
+    )
+    .await
+    .output
+    .unwrap();
     let view = opened["view"].clone();
     let connection = serde_json::from_value(
         query(&host, &context, "views.connection", json!({"view":view})).await,
@@ -127,7 +144,6 @@ async fn flush_close_requires_each_document_and_releases_references_atomically()
         connection,
         sequence: 0,
     };
-    // A missing document cannot be treated as proof that its draft was saved.
     assert!(
         host.invoke(
             &context,
@@ -140,16 +156,29 @@ async fn flush_close_requires_each_document_and_releases_references_atomically()
         host.invoke(
             &context,
             invocation(
-                "wrong-recovery-version",
+                "stale-disconnect",
                 "views.close",
                 json!({"view":view,
-        "mode":{"kind":"retain_acknowledged","expected_version":8}})
+        "mode":{"kind":"disconnect","connection":"another-connection"}})
             )
         )
         .await
         .is_err()
     );
-    for renderer in ["first-document", "second-document"] {
+    assert!(
+        host.invoke(
+            &context,
+            invocation(
+                "old-mode",
+                "views.close",
+                json!({"view":view,
+        "mode":{"kind":"retain_acknowledged","expected_version":0}})
+            )
+        )
+        .await
+        .is_err()
+    );
+    for renderer in ["first", "second"] {
         channel
             .send(
                 &host,
@@ -166,17 +195,16 @@ async fn flush_close_requires_each_document_and_releases_references_atomically()
             .send(
                 &host,
                 &revoked,
-                json!({"type":"observe_lifecycle","renderer":"first-document"})
+                json!({"type":"observe_lifecycle","renderer":"first"})
             )
             .await
             .is_err()
     );
-    let first = accepted(&host, &context, "flush-refused", &view).await;
-    let operation = channel.requested(&host, &context, "first-document").await;
+    let first = accepted(&host, &context, "refused-close", &view).await;
+    let operation = channel.requested(&host, &context, "first").await;
     assert_eq!(operation, first.operation.operation_id.as_str());
-    // The original operation is returned on retry; no second handshake.
     assert_eq!(
-        accepted(&host, &context, "flush-refused", &view)
+        accepted(&host, &context, "refused-close", &view)
             .await
             .operation
             .operation_id,
@@ -184,24 +212,35 @@ async fn flush_close_requires_each_document_and_releases_references_atomically()
     );
     for bad in [
         json!({"type":"register_close_handler","renderer":"late"}),
-        json!({"type":"prepare_close","renderer":"unknown","operation":operation,"state_version":0}),
-        json!({"type":"prepare_close","renderer":"first-document","operation":"another-operation","state_version":0}),
-        json!({"type":"prepare_close","renderer":"first-document","operation":operation,"state_version":99}),
+        json!({"type":"prepare_close","renderer":"unknown","operation":operation}),
+        json!({"type":"prepare_close","renderer":"first","operation":"another-operation"}),
         json!({"type":"begin_text_copy"}),
-        json!({"type":"cancel","operation_id":"accepted-science"}),
+        json!({"type":"cancel","operation_id":"accepted-work"}),
     ] {
         assert!(channel.send(&host, &context, bad).await.is_err());
     }
-    let saved = channel
+    // Preparing owners can use any declared Operation port. No content-specific
+    // exception, extra scope, or assumption that the operation saved a buffer.
+    let mut no_read = context.clone();
+    no_read.scopes.remove("plugins.read");
+    let export = json!({"type":"invoke","request_id":"prepare-export","capability":{"id":"plugins.archive_export","version":1},
+        "arguments":{"revision":archive.revision.id,"artifacts":[]},"preconditions":[]});
+    assert!(channel.send(&host, &no_read, export.clone()).await.is_err());
+    let original: OperationRecord =
+        serde_json::from_value(channel.send(&host, &context, export).await.unwrap()).unwrap();
+    assert_eq!(
+        settled(&host, &context, &original).await.status,
+        OperationStatus::Succeeded
+    );
+    assert_eq!(original.operation.caller.id, view.as_str().unwrap());
+    channel
         .send(
             &host,
             &context,
-            json!({"type":"set_state","expected_version":0,"state":{"text":"last 中文 draft"}}),
+            json!({"type":"prepare_close","renderer":"first","operation":operation}),
         )
         .await
         .unwrap();
-    assert_eq!(saved["status"], "succeeded");
-    channel.send(&host, &context, json!({"type":"prepare_close","renderer":"first-document","operation":operation,"state_version":1})).await.unwrap();
     assert!(
         !host
             .get_operation(&context, &first.operation.operation_id)
@@ -211,21 +250,9 @@ async fn flush_close_requires_each_document_and_releases_references_atomically()
             .status
             .is_terminal()
     );
-    channel.send(&host, &context, json!({"type":"refuse_close","renderer":"second-document","operation":operation,"reason":"draft save failed"})).await.unwrap();
+    channel.send(&host, &context, json!({"type":"refuse_close","renderer":"second","operation":operation,"reason":"Owner preparation failed"})).await.unwrap();
     let failed = settled(&host, &context, &first).await;
     assert_eq!(failed.status, OperationStatus::Failed);
-    assert!(failed.error.unwrap().contains("draft save failed"));
-    assert_eq!(
-        channel
-            .send(
-                &host,
-                &context,
-                json!({"type":"observe_lifecycle","renderer":"first-document"})
-            )
-            .await
-            .unwrap()["close"]["phase"],
-        "open"
-    );
     assert!(
         !query(&host, &context, "views.inspect", json!({"view":view})).await["closed"]
             .as_bool()
@@ -234,52 +261,79 @@ async fn flush_close_requires_each_document_and_releases_references_atomically()
     let timed = host
         .invoke(
             &context,
-            invocation("unanswered-document", "views.close", json!({"view":view})),
+            invocation("unanswered", "views.close", json!({"view":view})),
         )
         .await
         .unwrap();
     assert_eq!(timed.status, OperationStatus::Failed);
     assert!(timed.error.unwrap().contains("deadline"));
-    assert_eq!(
-        channel
-            .send(
-                &host,
-                &context,
-                json!({"type":"observe_lifecycle","renderer":"first-document"})
-            )
-            .await
-            .unwrap()["close"]["phase"],
-        "open"
-    );
-    // Each document must acknowledge the same final state. A later save cannot
-    // silently supersede another document's already acknowledged version.
-    let racing = accepted(&host, &context, "flush-state-race", &view).await;
-    let operation = channel.requested(&host, &context, "first-document").await;
-    channel.send(&host, &context, json!({"type":"prepare_close","renderer":"first-document","operation":operation,"state_version":1})).await.unwrap();
-    let saved = channel
+    // Ending a participant during preparation refuses the close even if it
+    // already acknowledged. It cannot shrink the set into apparent success.
+    let ending = accepted(&host, &context, "participant-ended", &view).await;
+    let operation = channel.requested(&host, &context, "first").await;
+    channel
         .send(
             &host,
             &context,
-            json!({"type":"set_state","expected_version":1,"state":{"text":"last 中文 draft"}}),
+            json!({"type":"prepare_close","renderer":"second","operation":operation}),
         )
         .await
         .unwrap();
-    assert_eq!(saved["status"], "succeeded");
-    channel.send(&host, &context, json!({"type":"prepare_close","renderer":"second-document","operation":operation,"state_version":2})).await.unwrap();
+    let release = json!({"view":view,"connection":channel.connection.connection,"window":"close-window",
+        "renderer":"second","call_token":channel.connection.call_token});
+    let control = |arguments| {
+        HostRequest::Control(ControlRequest {
+            capability: CapabilityRef::new("views.release_renderer", 1).unwrap(),
+            arguments,
+        })
+    };
+    let mut wrong = release.clone();
+    wrong["call_token"] = json!("wrong");
+    assert!(host.dispatch(&context, control(wrong)).await.is_err());
+    let mut foreign = context.clone();
+    foreign.caller.id = "foreign".into();
+    assert!(
+        host.dispatch(&foreign, control(release.clone()))
+            .await
+            .is_err()
+    );
     assert_eq!(
-        settled(&host, &context, &racing).await.status,
+        host.dispatch(&context, control(release.clone()))
+            .await
+            .unwrap()["released"],
+        true
+    );
+    assert_eq!(
+        host.dispatch(&context, control(release)).await.unwrap()["released"],
+        false
+    );
+    assert_eq!(
+        settled(&host, &context, &ending).await.status,
         OperationStatus::Failed
     );
-    // Force failure after marking the view closed. The one native transaction
-    // must roll back closure and revision release together.
+    channel
+        .send(
+            &host,
+            &context,
+            json!({"type":"register_close_handler","renderer":"replacement"}),
+        )
+        .await
+        .unwrap();
     let catalog =
         rusqlite::Connection::open(repository_path(&db).join("catalog-v1.sqlite3")).unwrap();
     catalog.execute_batch("CREATE TRIGGER reject_close_write BEFORE UPDATE ON plugin_views BEGIN SELECT RAISE(ABORT, 'close write failure'); END;").unwrap();
-    for (request, succeeds) in [("flush-write-fails", false), ("flush-succeeds", true)] {
+    for (request, succeeds) in [("write-fails", false), ("succeeds", true)] {
         let close = accepted(&host, &context, request, &view).await;
-        let operation = channel.requested(&host, &context, "first-document").await;
-        for renderer in ["first-document", "second-document"] {
-            channel.send(&host, &context, json!({"type":"prepare_close","renderer":renderer,"operation":operation,"state_version":2})).await.unwrap();
+        let operation = channel.requested(&host, &context, "first").await;
+        for renderer in ["first", "replacement"] {
+            channel
+                .send(
+                    &host,
+                    &context,
+                    json!({"type":"prepare_close","renderer":renderer,"operation":operation}),
+                )
+                .await
+                .unwrap();
         }
         let result = settled(&host, &context, &close).await;
         assert_eq!(
@@ -290,16 +344,15 @@ async fn flush_close_requires_each_document_and_releases_references_atomically()
         );
         let record = query(&host, &context, "views.inspect", json!({"view":view})).await;
         assert_eq!(record["closed"], succeeds);
-        assert_eq!(record["state"]["text"], "last 中文 draft");
-        assert_eq!(record["state_version"], 2);
+        assert!(record.get("state").is_none());
+        assert!(record.get("state_version").is_none());
+        let protected = repository
+            .references(&archive.revision.id)
+            .unwrap()
+            .iter()
+            .any(|reference| reference.contains(view.as_str().unwrap()));
+        assert_eq!(protected, !succeeds);
         if !succeeds {
-            assert!(
-                repository
-                    .references(&archive.revision.id)
-                    .unwrap()
-                    .iter()
-                    .any(|reference| reference.contains(view.as_str().unwrap()))
-            );
             catalog
                 .execute_batch("DROP TRIGGER reject_close_write;")
                 .unwrap();
@@ -310,18 +363,20 @@ async fn flush_close_requires_each_document_and_releases_references_atomically()
             .send(
                 &host,
                 &context,
-                json!({"type":"observe_lifecycle","renderer":"first-document"})
+                json!({"type":"observe_lifecycle","renderer":"first"})
             )
             .await
             .is_err()
     );
-    assert!(
-        !repository
-            .references(&archive.revision.id)
-            .unwrap()
-            .iter()
-            .any(|reference| reference.starts_with("view:")
-                && reference.contains(view.as_str().unwrap()))
+    assert_eq!(
+        query(
+            &host,
+            &context,
+            "plugins.instance",
+            json!({"instance":instance.instance.identity})
+        )
+        .await["instance"]["state"],
+        "active"
     );
     host.drain().await;
 }

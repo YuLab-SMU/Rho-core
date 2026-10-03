@@ -349,7 +349,6 @@
           },
           "uniqueItems": true
         },
-        "state_schema": true,
         "title": {
           "type": "string"
         }
@@ -359,7 +358,6 @@
         "id",
         "title",
         "entrypoint",
-        "state_schema",
         "configuration_schema",
         "resource_kinds"
       ]

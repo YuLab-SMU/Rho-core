@@ -8,4 +8,4 @@ import type { ViewInstanceId } from "./ViewInstanceId.js";
 import type { WindowId } from "./WindowId.js";
 import type { JsonValue } from "./serde_json/JsonValue.js";
 
-export type PluginViewRecord = { view: ViewInstanceId, instance: InstanceRef, project: ProjectId, principal: PrincipalId, contribution: ContributionId, window: WindowId, configuration: JsonValue, state: JsonValue, resource?: ResourceReference, state_version: number, closed: boolean, };
+export type PluginViewRecord = { view: ViewInstanceId, instance: InstanceRef, project: ProjectId, principal: PrincipalId, contribution: ContributionId, window: WindowId, configuration: JsonValue, resource?: ResourceReference, closed: boolean, };

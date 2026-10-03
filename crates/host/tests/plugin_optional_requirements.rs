@@ -28,7 +28,7 @@ fn package(path: &Path, weak: bool) -> PluginArchive {
             {"capability":{"id":"absent.optional","version":1},"scopes":[]},
             {"capability":{"id":"plugins.project_coverage","version":1},"scopes":["plugins.read","project.references.read"]},
             {"capability":{"id":"operation.project_coverage","version":1},"scopes":["operation.read","project.references.read"]}],
-        "views":[{"id":"view","title":"Optional view","entrypoint":"dist/index.html","state_schema":{},"configuration_schema":{},"resource_kinds":[]}],
+        "views":[{"id":"view","title":"Optional view","entrypoint":"dist/index.html","configuration_schema":{},"resource_kinds":[]}],
         "capabilities":[],"contexts":[],"backend":null,"configuration_schema":{},"default_configuration":{}
     })).unwrap()).unwrap();
     snapshot_directory(path, None, "ui-web").unwrap()
@@ -71,7 +71,7 @@ async fn project_coverage_delegates_only_explicit_metadata_grants_and_preserves_
         .output
         .unwrap()["instance"]["identity"]
         .clone();
-    let view=host.invoke(&context,invoke("open","views.open",json!({"instance":own,"contribution":"view","window":"coverage-window","configuration":{},"state":{}}))).await.unwrap().output.unwrap();
+    let view=host.invoke(&context,invoke("open","views.open",json!({"instance":own,"contribution":"view","window":"coverage-window","configuration":{}}))).await.unwrap().output.unwrap();
     let connected = connection(&host, &view).await;
     let mut sequence = 0;
     for (foreign_present, expected) in [(false, true), (true, false)] {
@@ -185,7 +185,7 @@ async fn optional_selection_is_frozen_at_activation_and_view_delegation_cannot_e
         invoke(
             id,
             "views.open",
-            json!({"instance":instance,"contribution":"view","window":"optional-window","configuration":{},"state":{}}),
+            json!({"instance":instance,"contribution":"view","window":"optional-window","configuration":{}}),
         )
     };
     let plain_view = host
@@ -313,7 +313,8 @@ async fn optional_selection_is_frozen_at_activation_and_view_delegation_cannot_e
         ("plain", plain_view, plain_instance),
         ("selected", selected_view, selected_instance),
     ] {
-        let closed = host.invoke(&context,invoke(&format!("close-{id}"),"views.close",json!({"view":view["view"],"mode":{"kind":"retain_acknowledged","expected_version":0}}))).await.unwrap();
+        let observed = connection(&host, &view).await;
+        let closed = host.invoke(&context,invoke(&format!("close-{id}"),"views.close",json!({"view":view["view"],"mode":{"kind":"disconnect","connection":observed.connection}}))).await.unwrap();
         assert_eq!(closed.status, OperationStatus::Succeeded);
         let released = host
             .invoke(

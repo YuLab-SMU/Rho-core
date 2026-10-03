@@ -264,56 +264,52 @@ Limits are 256 MiB per upload, 256 KiB per read, four concurrent transfers per H
 partial upload is not evidence; lost acknowledgement does not delete complete
 retained bytes. Identical uploads resolve to the same immutable resource identity.
 
-UI views use isolated iframes and an instance-bound message channel. Current
-messages cover queries, controls, invocations, original-operation reads and view
-state; resources use the declared Query port. Theme, menu, focus and shortcut
-integration must also use public services as those contributions are implemented.
-Views never receive the Host's general credential or parent DOM access.
-Private `views.connection` material remains with the containing Host shell;
-plugin callers cannot query it, even with a declared grant. `views.inspect`
-provides the public record, configuration and state without connection credentials.
-`views.caller@1` takes an empty object under `plugins.read` and returns
-`PluginViewCaller` (`schema/view-caller.json`). Its optional `view` contains the
-original native view, window and connection IDs, including across backend calls.
-Only a caller admitted without a view returns `null`. A closed, closing, missing
-or replaced calling view fails instead of falling back to another identity.
-The query accepts no selector, opens nothing and returns no call or asset token.
-This observation cannot authorize a later request or prove continuing liveness;
-owners must revalidate their original controller when admitting later writes.
-Native backends are trusted local code: this is UI, failure and lifetime isolation, not an OS sandbox.
+## View connections
 
-## Document draft content
+UI views use isolated iframes and an instance-bound channel. Core binds the exact
+instance, contribution, immutable bootstrap configuration, optional resource,
+project, principal and authenticated window. `views.open` creates this identity;
+`views.reconnect` takes only its retained view ID and requires the original instance
+to be active. Neither action restores content, restarts a provider or replays work.
 
-`DocumentDraft`, `StageDraftChunk`, `SaveDocumentDraft`, `ReadDocumentDraft` and
-`DiscardDocumentDraft` describe generic synchronized bytes exposed by the shared
-`documents.inspect/read/stage/save/discard` Host ports. The UI SDK stages and
-verifies this content without interpreting it. Draft metadata is opaque, and a
-version is not evidence of a file save or run.
+`views.inspect` returns public metadata. Private `views.connection` material stays
+with the containing shell; a plugin cannot query it even with a declared grant.
+Assets are restricted to the exact immutable artifact. View messages carry no Host
+bearer, caller-selected principal or project root. Calls use selected declared
+grants, intersected with the current parent authority.
 
-`documents.list@1` accepts `ListDocumentDrafts` and returns `DocumentDraftPage`.
-It enumerates at most 20 non-discarded summaries in an explicit window under the
-authenticated project and principal. An optional exact source filter selects the
-encoding revision and contribution. A summary includes identity, version, digest,
-byte count and bounded metadata; content and its chunk map are read separately.
-The exclusive identity cursor remains valid after that identity is discarded.
-Each page observes current state, so callers must inspect and read at the returned
-version; enumeration does not freeze all pages or attest to unsynchronized edits.
-Plugin views retain their original-window fence and current parent scopes. A
-closing view is restricted to its own source; listing is not a persistence
-exception for inactive instances. Reads never start providers or collect leases.
+`views.caller@1` takes `{}` under `plugins.read` and returns `PluginViewCaller`
+([schema](schema/view-caller.json)), including across backend delegation. Only an
+admitted caller without a view returns `null`; a closed, closing, missing or replaced
+calling view fails. It opens nothing, accepts no selector and discloses no credential.
+`views.presence` observes native attachment for one known caller-visible view,
+without establishing browser responsiveness or authority for a later action.
 
-An upload identifies one captured save attempt. Its chunks are canonical 64 KiB
-byte slices, except for the last slice, with per-chunk and full-content SHA-256.
-Staging is bounded and expires when unreferenced; only an atomic save publishes
-the new content and expected document version. A draft retains its exact source
-revision and contribution independently of a live view. Reads require the current
-version, return bounded base64 bytes and preserve Unicode by avoiding character
-offsets. A changed version fails instead of following the latest text. Discard
-retains an identity tombstone but releases content and the revision reference.
+Default `views.close` asks every registered participant to prepare through its
+owner's declared ports. `prepare_close` carries the original close Operation ID,
+with no content version. Core checks authority for all preparation calls; it does
+not know which call saves content. After all participants confirm, new mutations
+are fenced and the connection closes atomically with its package reference.
+Refusal, a participant ending or the fixed 15-second preparation deadline keeps
+the connection open. At most 32 participants may register per view; exceeding this
+fixed memory bound refuses registration. These limits are not per-call settings.
 
-Public types are emitted as `.d.ts` declarations with ESM `.js` specifiers. They
-contain no runtime implementation and do not force a consumer to widen its
-TypeScript source root. The external conformance check pins a separate `rootDir`.
+Explicit close mode `{kind:"disconnect", connection:<ConnectionId or null>}` must
+match the currently observed connection, using `null` only for a detached record.
+It acknowledges disconnection, not saved content or stopped native work.
+`views.release_renderer` is a private shell control for an ended participant,
+requires the original connection credential, and never confirms preparation.
+Closing a view, ending its transport and releasing its backend are separate actions.
+
+Core has no `windows.*`, `scenarios.*`, development preview, synchronized draft
+ports, visual tree model, `views.update` or `set_state`. A view has no content state
+or `state_schema`. Owners use their own content models and persistence, with the
+existing resource and Operation boundaries. The catalog format is 2; previous
+formats are refused before mutation. Consumers must explicitly select this breaking
+SDK contract; Core supplies no compatibility adapter or old-data migration.
+
+Native backends are trusted local code. These are channel and lifetime boundaries,
+not an OS sandbox.
 
 ## Contributed context
 

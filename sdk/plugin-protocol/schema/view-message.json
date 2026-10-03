@@ -104,7 +104,7 @@
       "description": "Every request crosses the containing shell's scoped Host port. No browser\ncredential, project root or user identity is accepted from the iframe.",
       "oneOf": [
         {
-          "description": "Register only after installing the local close-time flush handler.",
+          "description": "Register only after installing the owner's close preparation handler.",
           "type": "object",
           "properties": {
             "renderer": {
@@ -147,11 +147,6 @@
             "renderer": {
               "type": "string"
             },
-            "state_version": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
             "type": {
               "type": "string",
               "const": "prepare_close"
@@ -161,8 +156,7 @@
           "required": [
             "type",
             "renderer",
-            "operation",
-            "state_version"
+            "operation"
           ]
         },
         {
@@ -402,27 +396,6 @@
           "required": [
             "type",
             "operation_id"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "expected_version": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "state": true,
-            "type": {
-              "type": "string",
-              "const": "set_state"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "type",
-            "expected_version",
-            "state"
           ]
         }
       ]

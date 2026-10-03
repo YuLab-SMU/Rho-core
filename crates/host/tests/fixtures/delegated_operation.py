@@ -44,7 +44,7 @@ while (frame := read()) is not None:
         reverse = 'stage-' + request
         controls[reverse] = (request, kind)
         send(reverse, 'host_call', {'parent_request': request,
-            'capability': {'id': 'documents.stage', 'version': 1}, 'arguments': data['arguments']['stage']})
+            'capability': {'id': 'plugins.archive_stage', 'version': 1}, 'arguments': data['arguments']['stage']})
     elif kind == 'invoke':
         args = data['arguments']
         held[request] = data

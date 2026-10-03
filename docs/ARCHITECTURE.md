@@ -13,7 +13,7 @@ it does not establish every external action or the truth of a scientific claim.
 | [operation](../crates/operation/src/lib.rs) | Registry, admission, idempotency, execution, cancellation and retained-result commit reconciliation. |
 | [adapters/sqlite](../crates/adapters/sqlite/src/lib.rs) | Journal persistence and scoped record reads. Application settings have a separate store in this adapter. |
 | [host](../crates/host/src/lib.rs) | Project ownership, launcher authority, composition and shared public calls. |
-| [plugins](../crates/plugins/src/lib.rs) | Package containment, provider registration, native instances, resources and restricted views. Remaining draft responsibilities are listed below. |
+| [plugins](../crates/plugins/src/lib.rs) | Package containment, provider registration, native instances, resources and restricted views. |
 | [plugin-protocol](../crates/plugin-protocol/src/lib.rs) | Wire contracts between Core and native owners. |
 | [plugin-sdk](../crates/plugin-sdk/README.md) | Public backend transport helpers; no Host or journal dependency. |
 | [process-engine](../crates/process-engine/README.md) | Bounded process supervision shared by native callers. |
@@ -66,19 +66,28 @@ Before draining, callers stop admitting requests through every transport.
 Operation. It neither replays the native action nor reconstructs external history.
 Later owner observations can improve understanding without rewriting that record.
 
-## Remaining responsibility cuts
+## Responsibility boundary after the breaking upgrade
 
-Test-project orchestration, source branches, checkpoints and build execution have
-left Core. Development preview, scenarios, layouts and visual models have also
-been removed. Edit drafts and saved view state remain in Core's plugin infrastructure. Their removal is
-separate work governed by
-[responsibility transfer requirements](RESPONSIBILITY-TRANSFER.md). Splitting Host
-modules does not claim these capabilities have moved or that consumers are integrated.
+Core no longer owns test-project orchestration, editable source branches,
+checkpoints, build execution, development previews, scenarios, layouts, visual
+models, synchronized drafts or saved view content. Their implementation, public
+contracts and dedicated storage have been removed under the
+[responsibility transfer requirements](RESPONSIBILITY-TRANSFER.md).
 
-The current breaking upgrade uses fresh projects and storage. Retired capability
-contracts and their dedicated storage are removed rather than migrated. Operations
-accepted under the new contract still keep their identity, original request,
-outcomes and uncertainty.
+The remaining view record binds an immutable instance, contribution, bootstrap
+configuration, optional resource and authenticated window. It is connection
+metadata, with no buffer, content version or history. Close preparation coordinates
+registered participants and their original Operation; the owner decides what its
+preparation requires through declared ports. All confirmations seal new actions.
+An explicit disconnect checks the observed connection identity and does not attest
+to saved content or native cleanup. Renderer destruction cannot stand in for a
+participant's confirmation.
+
+The breaking upgrade uses fresh projects and storage. Catalog format 2 rejects a
+previous catalog before any mutation; no migration, compatibility or historical
+product-data recovery path remains. Operations accepted under the new contract
+keep their identity, original request, outcomes and uncertainty. Consumer SDK
+refresh and product integration remain separate owner tasks.
 
 ## Focused verification
 
@@ -92,3 +101,10 @@ Select the affected behavior; run Cargo commands serially in this checkout.
 These are Core boundary checks with disposable projects and minimal callers.
 Application assembly, consumer SDK refresh and scientific owner acceptance are
 separately selected work. See [README](../README.md) for launch and SDK export usage.
+
+For UI SDK changes, compile and test the public browser handshake independently:
+
+```sh
+npm exec --yes --package=typescript@5.9.3 -- tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM --strict --rootDir sdk --outDir target/sdk-test sdk/plugin-ui/index.ts
+RHO_UI_TEST_BUILD="$PWD/target/sdk-test" node --test scripts/tests/plugin-ui.test.mjs
+```

@@ -16,7 +16,7 @@ fn package(path: &Path, version: &str, requirement: Value) -> PluginArchive {
         .as_array_mut()
         .unwrap()
         .push(json!("index.html"));
-    manifest["views"] = json!([{"id":"view","title":"Combined view","entrypoint":"dist/index.html","state_schema":{"type":"object"},"configuration_schema":{"type":"object"},"resource_kinds":[]}]);
+    manifest["views"] = json!([{"id":"view","title":"Combined view","entrypoint":"dist/index.html","configuration_schema":{"type":"object"},"resource_kinds":[]}]);
     fs::write(
         path.join("index.html"),
         "<!doctype html><h1>Combined view</h1>",
@@ -118,7 +118,7 @@ async fn combined_package_can_declare_its_own_exact_grant_without_early_publicat
         .unwrap();
     assert_eq!(active.status, OperationStatus::Succeeded, "{active:?}");
     let instance = active.output.unwrap()["instance"]["identity"].clone();
-    let opened=host.invoke(&context,invoke("open","views.open",json!({"instance":instance,"contribution":"view","window":"window-one","configuration":{},"state":{}}))).await.unwrap();
+    let opened=host.invoke(&context,invoke("open","views.open",json!({"instance":instance,"contribution":"view","window":"window-one","configuration":{}}))).await.unwrap();
     assert_eq!(opened.status, OperationStatus::Succeeded, "{opened:?}");
     let view = opened.output.unwrap();
     let connection: PluginViewConnection =
@@ -155,7 +155,7 @@ async fn combined_package_can_declare_its_own_exact_grant_without_early_publicat
         .is_err(),
         "own contributions do not create undeclared grants"
     );
-    let closed=host.invoke(&context,invoke("close","views.close",json!({"view":view["view"],"mode":{"kind":"retain_acknowledged","expected_version":0}}))).await.unwrap();
+    let closed=host.invoke(&context,invoke("close","views.close",json!({"view":view["view"],"mode":{"kind":"disconnect","connection":connection.connection}}))).await.unwrap();
     assert_eq!(closed.status, OperationStatus::Succeeded, "{closed:?}");
     let released = host
         .invoke(

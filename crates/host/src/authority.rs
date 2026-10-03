@@ -3,7 +3,7 @@ use crate::{NextHost, OperationError};
 use rho_contract::{CallContext, CallerIdentity, CallerKind};
 
 /// Scopes required by capabilities that the generic Core itself registers:
-/// operations, plugin lifecycle, resources, generic drafts and Host paths.
+/// operations, plugin lifecycle, resources and Host paths.
 /// Domain authority (R, environments, processes, remote compute, project
 /// writes, ...) is never implied; a trusted launcher grants it explicitly.
 pub const CORE_LOCAL_SCOPES: &[&str] = &[
@@ -14,8 +14,6 @@ pub const CORE_LOCAL_SCOPES: &[&str] = &[
     rho_plugins::PLUGINS_WRITE_SCOPE,
     rho_plugins::PLUGINS_RUN_SCOPE,
     rho_plugins::RESOURCES_READ_SCOPE,
-    rho_plugins::DOCUMENTS_READ_SCOPE,
-    rho_plugins::DOCUMENTS_WRITE_SCOPE,
 ];
 
 /// Additional scopes chosen by the trusted local launcher (for example

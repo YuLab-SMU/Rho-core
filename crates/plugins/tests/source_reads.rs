@@ -23,7 +23,7 @@ fn fixture(path: &Path) -> PluginArchive {
     fs::write(path.join("plugin.json"), serde_json::to_vec(&json!({
         "protocol_version":1,"id":"example.source","name":"Source fixture","version":"1.0.0","description":"Independent package", "license":"MIT",
         "source":{"files":["main.ts","data.bin","empty"],"lockfiles":["deps.lock"],"build_instructions":"BUILD.md","build":null},
-        "dependencies":{},"requires":[],"views":[{"id":"view","title":"View","entrypoint":"dist/index.html","state_schema":{"type":"object"},"configuration_schema":{"type":"object"},"resource_kinds":[]}],
+        "dependencies":{},"requires":[],"views":[{"id":"view","title":"View","entrypoint":"dist/index.html","configuration_schema":{"type":"object"},"resource_kinds":[]}],
         "capabilities":[],"contexts":[],"backend":null,"configuration_schema":{"type":"object"},"default_configuration":{}
     })).unwrap()).unwrap();
     snapshot_directory(path, None, "ui-web").unwrap()

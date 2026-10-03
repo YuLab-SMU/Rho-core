@@ -3,6 +3,6 @@ import type { ViewInstanceId } from "./ViewInstanceId.js";
 
 /**
  * Reattach the retained view of an already active instance without creating a
- * new document, changing its state or replaying an earlier invocation.
+ * new view identity or replaying an earlier invocation.
  */
-export type ReconnectPluginView = { view: ViewInstanceId, expected_version: number, };
+export type ReconnectPluginView = { view: ViewInstanceId, };

@@ -13,8 +13,6 @@ mod resources;
 mod runtime;
 mod source;
 pub use resources::*;
-mod draft_service;
-mod drafts;
 #[cfg(unix)]
 mod resource_channel;
 mod view_close;

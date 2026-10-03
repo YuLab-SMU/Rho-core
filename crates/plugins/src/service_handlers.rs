@@ -81,7 +81,6 @@ pub(crate) fn register(
     for id in [
         "views.open",
         "views.reconnect",
-        "views.update",
         "views.close",
         "plugins.activate",
         "plugins.resume",
@@ -147,24 +146,16 @@ fn descriptor(id: &str) -> host::CapabilityDescriptor {
         "views.open" => (
             schema_for!(OpenPluginView).to_value(),
             schema_for!(PluginViewRecord).to_value(),
-            json!({"instance":instance(),"contribution":"inspector","window":"window-example","configuration":{},"state":{}}),
+            json!({"instance":instance(),"contribution":"inspector","window":"window-example","configuration":{}}),
             "Open a view of an exact active plugin instance",
-            true,
-            PLUGINS_RUN_SCOPE,
-        ),
-        "views.update" => (
-            schema_for!(UpdatePluginView).to_value(),
-            schema_for!(PluginViewRecord).to_value(),
-            json!({"view":"view-example","expected_version":0,"state":{}}),
-            "Save view state with its owner's expected version",
             true,
             PLUGINS_RUN_SCOPE,
         ),
         "views.reconnect" => (
             schema_for!(ReconnectPluginView).to_value(),
             schema_for!(PluginViewRecord).to_value(),
-            json!({"view":"view-example","expected_version":0}),
-            "Reconnect one retained view of an active instance at its acknowledged state version",
+            json!({"view":"view-example"}),
+            "Reconnect one retained view of an active instance without restoring content or replaying work",
             true,
             PLUGINS_RUN_SCOPE,
         ),
@@ -172,7 +163,7 @@ fn descriptor(id: &str) -> host::CapabilityDescriptor {
             schema_for!(ClosePluginView).to_value(),
             schema_for!(PluginViewRecord).to_value(),
             json!({"view":"view-example"}),
-            "Flush connected documents and close the view without releasing its backend; explicit retained-state recovery requires its acknowledged version",
+            "Coordinate participant preparation and close one observed view connection without releasing its backend or claiming saved content",
             true,
             PLUGINS_RUN_SCOPE,
         ),
@@ -432,7 +423,6 @@ fn normalized(id: &str, value: &Value) -> Result<Value, OperationError> {
         }
         "views.close" => normalize::<ClosePluginView>(value),
         "views.open" => normalize::<OpenPluginView>(value),
-        "views.update" => normalize::<UpdatePluginView>(value),
         "views.reconnect" => normalize::<ReconnectPluginView>(value),
         "plugins.activate" => normalize::<ActivatePlugin>(value),
         "plugins.reconcile_references" => normalize::<Reconcile>(value),
@@ -749,14 +739,10 @@ impl OperationHandler for Manage {
                     identity: format!("view-{}", uuid::Uuid::new_v4().simple()),
                 };
             }
-            "views.update" | "views.close" => {
-                let record = if self.id == "views.update" {
-                    self.service
-                        .view_record(context, &decode::<UpdatePluginView>(value)?.view)?
-                } else {
-                    self.service
-                        .prepare_view_close(context, &decode::<ClosePluginView>(value)?)?
-                };
+            "views.close" => {
+                let record = self
+                    .service
+                    .prepare_view_close(context, &decode::<ClosePluginView>(value)?)?;
                 let view = record.view.clone();
                 if !record.closed {
                     revision = Some(record.instance.revision);
@@ -958,17 +944,13 @@ impl Manage {
                     service.reconnect_view(&bound.context, &decode(value)?)?
                 ))
             }
-            "views.open" | "views.update" => {
+            "views.open" => {
                 let _guard = service.gate.lock().await;
-                let record = match self.id {
-                    "views.open" => service.open_view(
-                        &bound.context,
-                        ViewInstanceId::new(&bound.target.identity).map_err(error)?,
-                        decode(value)?,
-                    )?,
-                    "views.update" => service.update_view(&bound.context, decode(value)?)?,
-                    _ => unreachable!(),
-                };
+                let record = service.open_view(
+                    &bound.context,
+                    ViewInstanceId::new(&bound.target.identity).map_err(error)?,
+                    decode(value)?,
+                )?;
                 Ok(json!(record))
             }
 

@@ -16,7 +16,7 @@ async fn view_presence_distinguishes_native_attachment_closure_and_unknown_ident
     let instance=invoke(&host,&context,"activate-presence","plugins.activate",json!({"revision":archive.revision.id,"artifact":archive.artifacts[0].id,"target":backend_target(),"alias":"presence","configuration":{}})).await["instance"]["identity"].clone();
     let mut channels = vec![];
     for name in ["one", "two"] {
-        let view=invoke(&host,&context,&format!("open-{name}"),"views.open",json!({"instance":instance,"contribution":"view","window":format!("window-{name}"),"configuration":{},"state":{"private_draft":"Do not expose content"}})).await;
+        let view=invoke(&host,&context,&format!("open-{name}"),"views.open",json!({"instance":instance,"contribution":"view","window":format!("window-{name}"),"configuration":{}})).await;
         let connection = serde_json::from_value(
             query(
                 &host,
@@ -160,7 +160,7 @@ async fn view_presence_distinguishes_native_attachment_closure_and_unknown_ident
         &context,
         "close-presence",
         "views.close",
-        json!({"view":view,"mode":{"kind":"retain_acknowledged","expected_version":0}}),
+        json!({"view":view,"mode":{"kind":"disconnect","connection":first.connection.connection}}),
     )
     .await;
     assert_eq!(

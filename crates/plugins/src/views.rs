@@ -3,11 +3,9 @@ use rho_contract as host;
 use rho_operation::OperationError;
 use rho_plugin_protocol::*;
 use rusqlite::{OptionalExtension, params};
-use serde_json::Value;
 use std::collections::BTreeSet;
 
 const MAX_OPEN_VIEWS: usize = 256;
-const MAX_VIEW_STATE: usize = 256 * 1024;
 pub(crate) struct LiveView {
     pub(crate) connection: PluginViewConnection,
     pub(crate) context: host::CallContext,
@@ -29,19 +27,12 @@ fn token() -> String {
 fn owner(record: &PluginViewRecord) -> String {
     format!("{}:{}", record.instance.instance, record.view)
 }
-fn bounded_state(value: &Value) -> Result<(), OperationError> {
-    if serde_json::to_vec(value).map_err(invalid)?.len() > MAX_VIEW_STATE {
-        return Err(invalid("view state exceeds 256 KiB"));
-    }
-    Ok(())
-}
 fn retained_view_arguments(record: &PluginViewRecord) -> OpenPluginView {
     OpenPluginView {
         instance: record.instance.clone(),
         contribution: record.contribution.clone(),
         window: record.window.clone(),
         configuration: record.configuration.clone(),
-        state: record.state.clone(),
         resource: record.resource.clone(),
     }
 }
@@ -129,10 +120,8 @@ impl PluginService {
     ) -> Result<PluginViewRecord, OperationError> {
         let record = self.view_record(context, &args.view)?;
         self.check_window_context(context, &record.window)?;
-        if record.closed || record.state_version != args.expected_version {
-            return Err(OperationError::ContentChanged(
-                "view state changed or closed".into(),
-            ));
+        if record.closed {
+            return Err(OperationError::ContentChanged("view is closed".into()));
         }
         self.prepare_view(context, &retained_view_arguments(&record))?;
         Ok(record)
@@ -192,14 +181,9 @@ impl PluginService {
                 )
                 .map_err(error)?;
         }
-        bounded_state(&args.state)?;
         if serde_json::to_vec(args).map_err(invalid)?.len() > MAX_CONTROL_BYTES / 2 {
-            return Err(invalid(
-                "view configuration and state exceed the bootstrap quota",
-            ));
+            return Err(invalid("view configuration exceeds the bootstrap quota"));
         }
-        crate::runtime::validate_value(&contribution.state_schema, &args.state, "view state")
-            .map_err(error)?;
         crate::runtime::validate_value(
             &contribution.configuration_schema,
             &args.configuration,
@@ -242,9 +226,7 @@ impl PluginService {
             contribution: args.contribution,
             window: args.window,
             configuration: args.configuration,
-            state: args.state,
             resource: args.resource,
-            state_version: 0,
             closed: false,
         };
         let live = live_view(context, &record, contribution, grants)?;
@@ -295,83 +277,22 @@ impl PluginService {
         serde_json::from_str(&document.ok_or_else(|| OperationError::NotFound(id.to_string()))?)
             .map_err(invalid)
     }
-    pub(crate) fn update_view(
-        &self,
-        context: &host::CallContext,
-        args: UpdatePluginView,
-    ) -> Result<PluginViewRecord, OperationError> {
-        bounded_state(&args.state)?;
-        let mut record = self.view_record(context, &args.view)?;
-        if record.closed || record.state_version != args.expected_version {
-            return Err(OperationError::ContentChanged(
-                "view state changed or closed".into(),
-            ));
-        }
-        let mut views = self.views.lock().unwrap();
-        if views.get(&args.view).is_some_and(|live| {
-            live.closing
-                .as_ref()
-                .is_some_and(|close| close.sealed(live.renderers.len()))
-        }) {
-            return Err(OperationError::ContentChanged(
-                "view state is sealed for closure".into(),
-            ));
-        }
-        let mut repo = self.repository.lock().unwrap();
-        let manifest = repo
-            .revision(&record.instance.revision)
-            .map_err(error)?
-            .manifest;
-        let contribution = manifest
-            .views
-            .iter()
-            .find(|v| v.id == record.contribution)
-            .ok_or_else(|| invalid("missing view contribution"))?;
-        crate::runtime::validate_value(&contribution.state_schema, &args.state, "view state")
-            .map_err(error)?;
-        let before = serde_json::to_string(&record).map_err(invalid)?;
-        record.state = args.state;
-        record.state_version = record
-            .state_version
-            .checked_add(1)
-            .ok_or_else(|| invalid("view state version exhausted"))?;
-        let transaction = repo.connection.transaction().map_err(invalid)?;
-        if transaction
-            .execute(
-                "UPDATE plugin_views SET document=? WHERE id=? AND document=?",
-                params![
-                    serde_json::to_string(&record).map_err(invalid)?,
-                    record.view.as_str(),
-                    before
-                ],
-            )
-            .map_err(invalid)?
-            != 1
-        {
-            return Err(OperationError::ContentChanged("view state changed".into()));
-        }
-        transaction.commit().map_err(invalid)?;
-        if let Some(live) = views.get_mut(&record.view) {
-            live.connection.view = record.clone();
-        }
-        Ok(record)
-    }
-    pub(crate) fn close_view_at_version(
+    pub(crate) fn close_view_record(
         &self,
         context: &host::CallContext,
         id: &ViewInstanceId,
-        expected_version: u32,
+        expected_connection: Option<&ConnectionId>,
     ) -> Result<PluginViewRecord, OperationError> {
         let mut record = self.view_record(context, id)?;
         if record.closed {
             return Ok(record);
         }
-        if record.state_version != expected_version {
+        let mut views = self.views.lock().unwrap();
+        if views.get(id).map(|live| &live.connection.connection) != expected_connection {
             return Err(OperationError::ContentChanged(
-                "view state changed before closure".into(),
+                "view connection changed before closure".into(),
             ));
         }
-        let mut views = self.views.lock().unwrap();
         let mut repo = self.repository.lock().unwrap();
         let before = serde_json::to_string(&record).map_err(invalid)?;
         record.closed = true;
@@ -388,7 +309,7 @@ impl PluginService {
             .map_err(error)?
             != 1
         {
-            return Err(OperationError::ContentChanged("view state changed".into()));
+            return Err(OperationError::ContentChanged("view record changed".into()));
         }
         transaction
             .execute(
@@ -417,7 +338,7 @@ impl PluginService {
             )
         };
         let origin = scope.origin.as_ref().ok_or_else(unavailable)?;
-        if scope.window != origin.window || scope.draft_source.is_some() {
+        if scope.window != origin.window {
             return Err(unavailable());
         }
         let views = self.views.lock().unwrap();
@@ -447,7 +368,7 @@ impl PluginService {
         context: &host::CallContext,
         id: &ViewInstanceId,
     ) -> Result<PluginViewPresence, OperationError> {
-        // Match closure/update's views -> repository lock order so the retained
+        // Match closure's views -> repository lock order so the retained
         // record and current native connection belong to the same observation.
         let views = self.views.lock().unwrap();
         let record = self.view_record(context, id)?;
@@ -577,16 +498,12 @@ impl PluginService {
             observation.instance.identity == live.connection.view.instance
                 && observation.instance.state == InstanceState::Active
         });
-        let mut scope = host::ViewCallScope {
+        let scope = host::ViewCallScope {
             window: live.connection.view.window.clone(),
             origin: Some(PluginViewOrigin {
                 view: live.connection.view.view.clone(),
                 window: live.connection.view.window.clone(),
                 connection: live.connection.connection.clone(),
-            }),
-            draft_source: (live.closing.is_some() || !active).then(|| DraftSource {
-                revision: live.connection.view.instance.revision.clone(),
-                contribution: live.connection.view.contribution.clone(),
             }),
         };
         // Both the original opener and the current authenticated parent may
@@ -598,20 +515,10 @@ impl PluginService {
             if inherited.window != scope.window {
                 return Err(invalid("call is restricted to its original window"));
             }
-            if let Some(source) = &inherited.draft_source {
-                if scope
-                    .draft_source
-                    .as_ref()
-                    .is_some_and(|current| current != source)
-                {
-                    return Err(invalid("call is restricted to its original draft source"));
-                }
-                scope.draft_source = Some(source.clone());
-            }
         }
         context.view_scope = Some(scope);
         if let Some(cap) = capability {
-            if !active && !crate::draft_service::view_persistence_capability(&cap.id, cap.version) {
+            if !active {
                 return Err(invalid("view instance is no longer accepting calls"));
             }
             let grant = live

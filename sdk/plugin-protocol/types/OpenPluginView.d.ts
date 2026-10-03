@@ -5,7 +5,7 @@ import type { ResourceReference } from "./ResourceReference.js";
 import type { WindowId } from "./WindowId.js";
 import type { JsonValue } from "./serde_json/JsonValue.js";
 
-export type OpenPluginView = { instance: InstanceRef, contribution: ContributionId, window: WindowId, configuration: JsonValue, state: JsonValue,
+export type OpenPluginView = { instance: InstanceRef, contribution: ContributionId, window: WindowId, configuration: JsonValue,
 /**
  * Immutable resource context; it confers no resource-read authority.
  */

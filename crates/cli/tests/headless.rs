@@ -124,6 +124,13 @@ fn ordinary_host_rejects_retired_product_work_without_recording_an_operation() {
         "scenarios.prepare",
         "scenarios.apply",
         "scenarios.checkpoint",
+        "documents.stage",
+        "documents.save",
+        "documents.inspect",
+        "documents.list",
+        "documents.read",
+        "documents.discard",
+        "views.update",
     ];
     let capabilities = ready["capabilities"].as_array().unwrap();
     for id in retired {

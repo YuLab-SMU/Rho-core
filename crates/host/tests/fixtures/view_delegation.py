@@ -35,7 +35,7 @@ def delegate(frame):
     key = 'reverse-' + frame['request']
     pending[key] = frame
     send(key, 'host_call', {'parent_request': frame['request'],
-         'capability': args.get('capability', {'id': 'documents.list', 'version': 1}),
+         'capability': args.get('capability', {'id': 'views.caller', 'version': 1}),
          'arguments': args['host_arguments']})
 
 frame = read()

@@ -86,7 +86,7 @@ async fn original_download_requires_declared_read_scope_exact_resource_and_live_
     let mut channels = Vec::new();
     for (name, archive) in [("denied", &denied), ("allowed", &allowed)] {
         let instance = observation(&run(&host, &context, name, "plugins.activate", json!({"revision":archive.revision.id,"artifact":archive.artifacts[0].id,"target":"ui-web","alias":name,"configuration":{}})).await);
-        let opened = run(&host, &context, &format!("open-{name}"), "views.open", json!({"instance":instance.instance.identity,"contribution":"view","window":"download-window","configuration":{},"state":{"text":""}})).await.output.unwrap();
+        let opened = run(&host, &context, &format!("open-{name}"), "views.open", json!({"instance":instance.instance.identity,"contribution":"view","window":"download-window","configuration":{}})).await.output.unwrap();
         let connection = serde_json::from_value(
             query(
                 &host,
@@ -235,7 +235,14 @@ async fn original_download_requires_declared_read_scope_exact_resource_and_live_
         .await
         .unwrap_err();
     assert!(fenced.to_string().contains("fenced"));
-    allowed.send(&host, &context, json!({"type":"prepare_close","renderer":"document","operation":operation,"state_version":0})).await.unwrap();
+    allowed
+        .send(
+            &host,
+            &context,
+            json!({"type":"prepare_close","renderer":"document","operation":operation}),
+        )
+        .await
+        .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             let state = host

@@ -56,7 +56,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ResourceTransferRequest::export_all(&types)?;
     ResourceTransferResponse::export_all(&types)?;
     OpenPluginView::export_all(&types)?;
-    UpdatePluginView::export_all(&types)?;
     ReconnectPluginView::export_all(&types)?;
     PluginViewArguments::export_all(&types)?;
     ClosePluginView::export_all(&types)?;
@@ -71,15 +70,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ContextPage::export_all(&types)?;
     PreviewContext::export_all(&types)?;
     ContextPreview::export_all(&types)?;
-    DocumentDraft::export_all(&types)?;
-    StageDraftChunk::export_all(&types)?;
-    SaveDocumentDraft::export_all(&types)?;
-    DocumentDraftArguments::export_all(&types)?;
-    ListDocumentDrafts::export_all(&types)?;
-    DocumentDraftPage::export_all(&types)?;
-    ReadDocumentDraft::export_all(&types)?;
-    DocumentDraftChunk::export_all(&types)?;
-    DiscardDocumentDraft::export_all(&types)?;
     RpcFrame::export_all(&types)?;
     ListPluginSource::export_all(&types)?;
     PluginSourcePage::export_all(&types)?;
@@ -181,19 +171,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("context-page", schemars::schema_for!(ContextPage)),
         ("preview-context", schemars::schema_for!(PreviewContext)),
         ("context-preview", schemars::schema_for!(ContextPreview)),
-        ("document-draft", schemars::schema_for!(DocumentDraft)),
-        (
-            "list-document-drafts",
-            schemars::schema_for!(ListDocumentDrafts),
-        ),
-        (
-            "document-draft-page",
-            schemars::schema_for!(DocumentDraftPage),
-        ),
-        (
-            "save-document-draft",
-            schemars::schema_for!(SaveDocumentDraft),
-        ),
         (
             "resource-transfer-request",
             schemars::schema_for!(ResourceTransferRequest),

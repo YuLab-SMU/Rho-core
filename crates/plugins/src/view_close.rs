@@ -3,11 +3,11 @@ use crate::{PluginService, service::invalid};
 use rho_contract as host;
 use rho_operation::OperationError;
 use rho_plugin_protocol::*;
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeSet, time::Duration};
 
 pub(crate) struct CloseAttempt {
     pub(crate) operation: OperationId,
-    prepared: BTreeMap<RequestId, u32>,
+    prepared: BTreeSet<RequestId>,
     refused: Option<String>,
 }
 impl CloseAttempt {
@@ -19,8 +19,8 @@ impl CloseAttempt {
     }
 }
 
-/// Dropping an interrupted preparation leaves the view editable. It never closes
-/// the native session or pretends that unacknowledged view state was saved.
+/// Interrupted preparation keeps the connection open. It never closes the
+/// native session or establishes that owner content was saved.
 struct Preparation<'a> {
     service: &'a PluginService,
     view: ViewInstanceId,
@@ -63,20 +63,24 @@ impl PluginService {
             ));
         }
         match &args.mode {
-            PluginViewCloseMode::Flush => {
+            PluginViewCloseMode::Cooperate => {
                 if !views
                     .get(&args.view)
                     .is_some_and(|live| !live.renderers.is_empty())
                 {
                     return Err(invalid(
-                        "no view close handler is connected; inspect the retained state before explicitly closing with its acknowledged version",
+                        "no participant is connected; use an explicit disconnect with the observed connection identity",
                     ));
                 }
             }
-            PluginViewCloseMode::RetainAcknowledged { expected_version } => {
-                if record.state_version != *expected_version {
+            PluginViewCloseMode::Disconnect { connection } => {
+                if views
+                    .get(&args.view)
+                    .map(|live| &live.connection.connection)
+                    != connection.as_ref()
+                {
                     return Err(OperationError::ContentChanged(
-                        "the acknowledged view state changed".into(),
+                        "the observed view connection changed".into(),
                     ));
                 }
             }
@@ -86,7 +90,7 @@ impl PluginService {
 
     /// Only the containing scoped channel can register or answer for its own
     /// view. Each document registers separately; one document cannot attest that
-    /// another document's buffer has been flushed.
+    /// another participant completed its owner-defined preparation.
     pub fn cooperate_with_view_close(
         &self,
         context: &host::CallContext,
@@ -138,18 +142,13 @@ impl PluginService {
                 ));
             }
             match request {
-                PluginViewRequest::PrepareClose { state_version, .. } => {
-                    if *state_version != live.connection.view.state_version {
-                        return Err(OperationError::ContentChanged(
-                            "view state changed before close preparation".into(),
-                        ));
-                    }
+                PluginViewRequest::PrepareClose { .. } => {
                     if close.refused.is_some() {
                         return Err(OperationError::ContentChanged(
                             "view close preparation was refused".into(),
                         ));
                     }
-                    close.prepared.insert(renderer.clone(), *state_version);
+                    close.prepared.insert(renderer.clone());
                 }
                 PluginViewRequest::RefuseClose { reason, .. } => {
                     if reason.trim().is_empty() || reason.len() > 4096 {
@@ -170,10 +169,9 @@ impl PluginService {
                         operation: close.operation.clone(),
                         reason: reason.clone(),
                     }
-                } else if let Some(state_version) = close.prepared.get(renderer) {
+                } else if close.prepared.contains(renderer) {
                     PluginViewCloseState::Prepared {
                         operation: close.operation.clone(),
-                        state_version: *state_version,
                     }
                 } else {
                     PluginViewCloseState::Requested {
@@ -184,7 +182,6 @@ impl PluginService {
         };
         Ok(PluginViewLifecycle {
             view: view.clone(),
-            state_version: live.connection.view.state_version,
             close,
         })
     }
@@ -199,34 +196,28 @@ impl PluginService {
             .get(view)
             .ok_or_else(|| OperationError::NotFound("view connection".into()))?;
         if let Some(close) = &live.closing {
-            match request {
-                request if crate::draft_service::view_persistence_write(request) => {
-                    if close.sealed(live.renderers.len()) {
-                        return Err(OperationError::ContentChanged(
-                            "view drafts are sealed for closure".into(),
-                        ));
-                    }
-                }
-                PluginViewRequest::Invoke { .. }
-                | PluginViewRequest::Control { .. }
-                | PluginViewRequest::Cancel { .. }
-                | PluginViewRequest::BeginTextCopy
-                | PluginViewRequest::OpenExternalUrl { .. }
-                | PluginViewRequest::DownloadResource { .. }
-                | PluginViewRequest::DownloadArchive { .. }
-                | PluginViewRequest::FinishTextCopy { .. } => {
-                    return Err(OperationError::ContentChanged(
-                        "view closure is preparing; new actions are fenced".into(),
-                    ));
-                }
-                PluginViewRequest::SetState { .. } if close.sealed(live.renderers.len()) => {
-                    return Err(OperationError::ContentChanged(
-                        "view state is sealed for closure".into(),
-                    ));
-                }
-                _ => (),
+            let browser_action = matches!(
+                request,
+                PluginViewRequest::Cancel { .. }
+                    | PluginViewRequest::BeginTextCopy
+                    | PluginViewRequest::OpenExternalUrl { .. }
+                    | PluginViewRequest::DownloadResource { .. }
+                    | PluginViewRequest::DownloadArchive { .. }
+                    | PluginViewRequest::FinishTextCopy { .. }
+            );
+            let owner_action = matches!(
+                request,
+                PluginViewRequest::Invoke { .. } | PluginViewRequest::Control { .. }
+            );
+            if browser_action || (owner_action && close.sealed(live.renderers.len())) {
+                return Err(OperationError::ContentChanged(
+                    "view closure is preparing; new actions are fenced".into(),
+                ));
             }
         }
+        // Owners may use their declared ports while preparing. Core neither
+        // identifies their save calls nor exempts them from authority checks.
+
         Ok(())
     }
 
@@ -243,8 +234,8 @@ impl PluginService {
             if record.closed {
                 return Ok(record);
             }
-            if let PluginViewCloseMode::RetainAcknowledged { expected_version } = args.mode {
-                return self.close_view_at_version(context, &args.view, expected_version);
+            if let PluginViewCloseMode::Disconnect { connection } = &args.mode {
+                return self.close_view_record(context, &args.view, connection.as_ref());
             }
             self.views
                 .lock()
@@ -253,7 +244,7 @@ impl PluginService {
                 .unwrap()
                 .closing = Some(CloseAttempt {
                 operation: operation.clone(),
-                prepared: BTreeMap::new(),
+                prepared: BTreeSet::new(),
                 refused: None,
             });
         }
@@ -264,28 +255,24 @@ impl PluginService {
         };
         self.view_sequences
             .send_modify(|version| *version = version.wrapping_add(1));
-        let expected_version = tokio::time::timeout(Duration::from_secs(15), async {
+        let connection = tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 {
                     let views = self.views.lock().unwrap();
                     let live = views.get(&args.view).ok_or_else(|| OperationError::NotFound("view connection ended during closure".into()))?;
                     let close = live.closing.as_ref().ok_or_else(|| OperationError::ContentChanged("view close preparation ended".into()))?;
                     if close.operation != operation { return Err(OperationError::ContentChanged("view close identity changed".into())); }
-                    if let Some(reason) = &close.refused { return Err(invalid(format!("view state was not flushed: {reason}"))); }
+                    if let Some(reason) = &close.refused { return Err(invalid(format!("participant preparation was refused: {reason}"))); }
                     if close.sealed(live.renderers.len()) {
-                        let version = live.connection.view.state_version;
-                        if !close.prepared.values().all(|prepared| *prepared == version) {
-                            return Err(OperationError::ContentChanged("view state changed after a document confirmed its flush".into()));
-                        }
-                        return Ok(version);
+                        return Ok(live.connection.connection.clone());
                     }
                 }
                 changes.changed().await.map_err(invalid)?;
             }
-        }).await.map_err(|_| invalid("the view did not confirm saved state before the close deadline; the view remains open"))??;
+        }).await.map_err(|_| invalid("participants did not confirm preparation before the close deadline; the view remains open"))??;
         let _guard = self.gate.lock().await;
         // A document can end while this task waits for the native gate. A
-        // smaller participant set must never turn that loss into flush proof.
+        // smaller participant set must never turn that loss into preparation proof.
         {
             let views = self.views.lock().unwrap();
             let close = views
@@ -293,9 +280,11 @@ impl PluginService {
                 .and_then(|live| live.closing.as_ref())
                 .ok_or_else(|| invalid("view close preparation ended"))?;
             if let Some(reason) = &close.refused {
-                return Err(invalid(format!("view state was not flushed: {reason}")));
+                return Err(invalid(format!(
+                    "participant preparation was refused: {reason}"
+                )));
             }
         }
-        self.close_view_at_version(context, &args.view, expected_version)
+        self.close_view_record(context, &args.view, Some(&connection))
     }
 }

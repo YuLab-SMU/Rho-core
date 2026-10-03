@@ -1,4 +1,4 @@
-//! Transient document ownership. Destruction is not a flush acknowledgement.
+//! Transient document ownership. Destruction is not a preparation acknowledgement.
 use crate::{PLUGINS_RUN_SCOPE, PluginService, service::invalid};
 use async_trait::async_trait;
 use rho_contract as host;
@@ -32,13 +32,13 @@ pub(crate) fn register(
                 owner: "plugins".into(),
                 when_to_use: vec!["Only after the containing shell destroys this exact renderer; never for heartbeat expiry, hiding or an uncertain disconnect.".into()],
                 limitations: vec!["Requires the original private view credential, connection, window, project and principal. Plugin callers cannot use this port. Credentials remain outside Operation records.".into(), "A lost notification retains uncertainty. Deregistration never attests to saved content; a concurrent close is refused and must be retried explicitly.".into()],
-                effects: "Remove only one transient registration. Does not change saved state, close a view, cancel work or release a backend.".into(),
+                effects: "Remove only one transient registration. Does not save content, close a view, cancel work or release a backend.".into(),
                 retry_rule: "An identical repeat is harmless while the original connection exists. Never substitute a new renderer or connection.".into(),
                 cancellation_rule: "No persistent operation is created. Lost acknowledgement does not prove deregistration.".into(),
                 preconditions: vec![],
                 examples: vec![host::CapabilityExample {
                     arguments: json!({"view":"view-example","connection":"connection-example","window":"window-example","renderer":"renderer-example","call_token":"private-shell-credential"}),
-                    result_explanation: "Whether the exact registration was removed, without a flush or closure receipt.".into(),
+                    result_explanation: "Whether the exact registration was removed, without a preparation or closure receipt.".into(),
                 }],
                 related_capabilities: vec![host::CapabilityRef::new("views.close", 1).unwrap()],
                 related_skills: vec![], position_units: vec![],

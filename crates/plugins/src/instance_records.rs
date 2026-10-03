@@ -239,23 +239,6 @@ impl PluginRepository {
             "instance page size must be 1–100",
         )?;
         let snapshot = self.connection.unchecked_transaction()?;
-        // An earlier foundation catalog may have no lifecycle records yet.
-        let present = self
-            .connection
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='plugin_instances'",
-                [],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if !present {
-            return Ok(PluginInstancePage {
-                instances: vec![],
-                next: None,
-                total: 0,
-            });
-        }
         let mut instances = self.connection.prepare("SELECT document FROM plugin_instances WHERE (?1 IS NULL OR id>?1) AND (?3 IS NULL OR json_extract(document,'$.project')=?3) AND (?4 IS NULL OR json_extract(document,'$.principal')=?4) ORDER BY id LIMIT ?2")?
             .query_map(params![after.map(PluginInstanceId::as_str), (limit + 1) as u64, scope.map(|s|s.0.as_str()),scope.map(|s|s.1.as_str())], |r| r.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?.into_iter().map(|s| serde_json::from_str::<PluginInstance>(&s)).collect::<Result<Vec<_>, _>>()?;

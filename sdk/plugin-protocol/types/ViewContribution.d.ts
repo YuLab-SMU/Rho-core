@@ -3,4 +3,4 @@ import type { ContributionId } from "./ContributionId.js";
 import type { PackagePath } from "./PackagePath.js";
 import type { JsonValue } from "./serde_json/JsonValue.js";
 
-export type ViewContribution = { id: ContributionId, title: string, entrypoint: PackagePath, state_schema: JsonValue, configuration_schema: JsonValue, resource_kinds: Array<string>, };
+export type ViewContribution = { id: ContributionId, title: string, entrypoint: PackagePath, configuration_schema: JsonValue, resource_kinds: Array<string>, };

@@ -39,12 +39,22 @@ async fn run(
     cap: &str,
     mut args: Value,
 ) -> OperationRecord {
-    // These lifecycle fixtures have no cooperating UI document. Recovery closes
-    // explicitly retain the observed version; handshake tests choose Flush.
+    // Fixtures explicitly disconnect an observed channel; cooperative tests
+    // call Host admission directly and answer from every participant.
     if cap == "views.close" && args.get("mode").is_none() {
-        let record = query(host, context, "views.inspect", json!({"view":args["view"]})).await;
-        args["mode"] =
-            json!({"kind":"retain_acknowledged","expected_version":record["state_version"]});
+        let connection = host
+            .query_snapshot(
+                context,
+                QueryRequest {
+                    capability: CapabilityRef::new("views.connection", 1).unwrap(),
+                    arguments: json!({"view":args["view"]}),
+                },
+            )
+            .await
+            .ok()
+            .and_then(|snapshot| snapshot.data)
+            .map(|data| data["connection"].clone());
+        args["mode"] = json!({"kind":"disconnect","connection":connection});
     }
     host.invoke(context, invocation(id, cap, args))
         .await
@@ -99,7 +109,7 @@ async fn pending_cancellation_survives_view_disconnect_without_blocking_other_ad
     let native_instance =
         observation(&run(&host, &context, "start-native", "plugins.activate", args).await);
     let ui_instance = observation(&run(&host,&context,"start-ui","plugins.activate",json!({"revision":ui.revision.id,"artifact":ui.artifacts[0].id,"target":"ui-web","alias":"ui","configuration":{}})).await);
-    let view = run(&host,&context,"open-view","views.open",json!({"instance":ui_instance.instance.identity,"contribution":"view","window":"window-a","configuration":{},"state":{"text":""}})).await.output.unwrap();
+    let view = run(&host,&context,"open-view","views.open",json!({"instance":ui_instance.instance.identity,"contribution":"view","window":"window-a","configuration":{}})).await.output.unwrap();
     let connection: PluginViewConnection = serde_json::from_value(
         query(
             &host,
@@ -963,14 +973,14 @@ fn ui_package(path: &std::path::Path) -> PluginArchive {
         "protocol_version":1,"id":"example.view","name":"External view","version":"1","description":"Independent isolated view","license":"MIT",
         "source":{"files":["index.html"],"lockfiles":["deps.lock"],"build_instructions":"BUILD.md","build":null},
         "dependencies":{},"requires":[{"capability":{"id":"plugins.list","version":1},"scopes":["plugins.read"]}],
-        "views":[{"id":"view","title":"External view","entrypoint":"dist/index.html","state_schema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false},"configuration_schema":{"type":"object","additionalProperties":false},"resource_kinds":[]}],
+        "views":[{"id":"view","title":"External view","entrypoint":"dist/index.html","configuration_schema":{"type":"object","additionalProperties":false},"resource_kinds":[]}],
         "capabilities":[],"contexts":[],"backend":null,"configuration_schema":{"type":"object","additionalProperties":false},"default_configuration":{}
     })).unwrap()).unwrap();
     rho_plugins::snapshot_directory(path, None, "ui-web").unwrap()
 }
 
 #[tokio::test]
-async fn ui_only_views_have_scoped_channels_durable_state_and_independent_instance_lifetimes() {
+async fn ui_only_views_have_scoped_channels_and_independent_instance_lifetimes() {
     use rho_plugin_protocol::{PluginViewConnection, PluginViewMessage, PluginViewRecord};
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path().join("project");
@@ -988,8 +998,7 @@ async fn ui_only_views_have_scoped_channels_durable_state_and_independent_instan
         observation(&run(&host, &context, "ui-activate", "plugins.activate", args).await);
     assert!(instance.process_id.is_none());
     assert!(instance.observed_in_this_host);
-    assert!(host.invoke(&context,invocation("oversized-view","views.open",json!({"instance":instance.instance.identity,"contribution":"view","window":"window-a","configuration":{},"state":{"text":"x".repeat(256*1024)}}))).await.is_err());
-    let record=run(&host,&context,"view-open","views.open",json!({"instance":instance.instance.identity,"contribution":"view","window":"window-a","configuration":{},"state":{"text":"中文 α"}})).await;
+    let record=run(&host,&context,"view-open","views.open",json!({"instance":instance.instance.identity,"contribution":"view","window":"window-a","configuration":{}})).await;
     assert_eq!(
         record.status,
         OperationStatus::Succeeded,
@@ -1070,7 +1079,7 @@ async fn ui_only_views_have_scoped_channels_durable_state_and_independent_instan
     );
     // The same broad scope cannot grant an undeclared capability.
     assert!(host.dispatch_plugin_view(&context,"window-a",&connection.call_token,message(2,json!({"type":"query","capability":{"id":"plugins.instances","version":1},"arguments":{"limit":10}}))).await.is_err());
-    let ordered: PluginViewRecord = serde_json::from_value(run(&host,&context,"ordered-open","views.open",json!({"instance":instance.instance.identity,"contribution":"view","window":"window-a","configuration":{},"state":{"text":""}})).await.output.unwrap()).unwrap();
+    let ordered: PluginViewRecord = serde_json::from_value(run(&host,&context,"ordered-open","views.open",json!({"instance":instance.instance.identity,"contribution":"view","window":"window-a","configuration":{}})).await.output.unwrap()).unwrap();
     let ordered_connection: PluginViewConnection = serde_json::from_value(
         query(
             &host,
@@ -1274,29 +1283,6 @@ async fn ui_only_views_have_scoped_channels_durable_state_and_independent_instan
         .await
         .is_err()
     );
-    let saved = host
-        .dispatch_plugin_view(
-            &context,
-            "window-a",
-            &connection.call_token,
-            message(
-                3,
-                json!({"type":"set_state","expected_version":0,"state":{"text":"kept Ω"}}),
-            ),
-        )
-        .await
-        .unwrap();
-    assert_eq!(saved["status"], "succeeded");
-    assert_eq!(saved["output"]["state_version"], 1);
-    let stale = run(
-        &host,
-        &context,
-        "stale-state",
-        "views.update",
-        json!({"view":view.view,"expected_version":0,"state":{"text":"stale"}}),
-    )
-    .await;
-    assert_ne!(stale.status, OperationStatus::Succeeded);
     let asset = host
         .plugin_view_asset(
             connection.connection.as_str(),
@@ -1389,7 +1375,7 @@ async fn ui_only_views_have_scoped_channels_durable_state_and_independent_instan
         .await
         .unwrap();
     let stored = query(&host, &context, "views.inspect", json!({"view":view.view})).await;
-    assert_eq!(stored["state"]["text"], "kept Ω");
+    assert!(stored.get("state").is_none());
     assert_eq!(stored["closed"], true);
     assert!(
         host.query_snapshot(
@@ -1404,7 +1390,7 @@ async fn ui_only_views_have_scoped_channels_durable_state_and_independent_instan
     );
     repo.import(&archive).unwrap();
     let historical=observation(&run(&host,&context,"ui-historical","plugins.activate",json!({"revision":archive.revision.id,"artifact":archive.artifacts[0].id,"target":"ui-web","alias":"historical","configuration":{}})).await);
-    let old_view=run(&host,&context,"view-historical","views.open",json!({"instance":historical.instance.identity,"contribution":"view","window":"window-a","configuration":{},"state":{"text":"saved before disconnect"}})).await.output.unwrap();
+    let old_view=run(&host,&context,"view-historical","views.open",json!({"instance":historical.instance.identity,"contribution":"view","window":"window-a","configuration":{}})).await.output.unwrap();
     drop(host);
     let host = NextHost::open_plugin_workspace(&db, &project)
         .await
@@ -1484,7 +1470,7 @@ async fn closing_a_view_does_not_cancel_or_retarget_its_accepted_native_operatio
         .await,
     );
     let ui_instance=observation(&run(&host,&context,"ui-start","plugins.activate",json!({"revision":ui.revision.id,"artifact":ui.artifacts[0].id,"target":"ui-web","alias":"ui","configuration":{}})).await);
-    let view:PluginViewRecord=serde_json::from_value(run(&host,&context,"open","views.open",json!({"instance":ui_instance.instance.identity,"contribution":"view","window":"window-a","configuration":{},"state":{"text":""}})).await.output.unwrap()).unwrap();
+    let view:PluginViewRecord=serde_json::from_value(run(&host,&context,"open","views.open",json!({"instance":ui_instance.instance.identity,"contribution":"view","window":"window-a","configuration":{}})).await.output.unwrap()).unwrap();
     let connection: PluginViewConnection = serde_json::from_value(
         query(
             &host,
@@ -1671,7 +1657,7 @@ async fn ephemeral_controls_share_host_and_view_authority_without_recording_answ
         .await,
     );
     let ui_instance = observation(&run(&host,&context,"control-ui","plugins.activate",json!({"revision":ui.revision.id,"artifact":ui.artifacts[0].id,"target":"ui-web","alias":"ui","configuration":{}})).await);
-    let view = run(&host,&context,"control-view","views.open",json!({"instance":ui_instance.instance.identity,"contribution":"view","window":"window-a","configuration":{},"state":{"text":""}})).await.output.unwrap();
+    let view = run(&host,&context,"control-view","views.open",json!({"instance":ui_instance.instance.identity,"contribution":"view","window":"window-a","configuration":{}})).await.output.unwrap();
     let connection: PluginViewConnection = serde_json::from_value(
         query(
             &host,

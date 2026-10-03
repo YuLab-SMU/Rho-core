@@ -32,7 +32,7 @@ fn fixture(path: &Path) {
         "source": { "files": ["src/view.ts"], "lockfiles": ["deps.lock"], "build_instructions": "BUILD.md", "build": null },
         "dependencies": {}, "requires": [], "capabilities": [], "contexts": [], "backend": null,
         "views": [{ "id": "report", "title": "Report", "entrypoint": "dist/index.html",
-            "state_schema": {"type":"object"}, "configuration_schema": {"type":"object"}, "resource_kinds": [] }],
+             "configuration_schema": {"type":"object"}, "resource_kinds": [] }],
         "configuration_schema": {"type":"object", "additionalProperties":false}, "default_configuration": {}
     })).unwrap()).unwrap();
 }
@@ -44,7 +44,7 @@ fn fresh_catalog_has_no_development_storage() {
     let connection = rusqlite::Connection::open(repo.root().join("catalog-v1.sqlite3")).unwrap();
     let tables: u32 = connection
         .query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE name IN ('plugin_test_projects','branches','plugin_branch_origins','plugin_window_layouts','plugin_scenario_revisions','plugin_scenario_heads','plugin_window_scenarios')",
+            "SELECT count(*) FROM sqlite_schema WHERE name IN ('plugin_test_projects','branches','plugin_branch_origins','plugin_window_layouts','plugin_scenario_revisions','plugin_scenario_heads','plugin_window_scenarios','plugin_document_drafts','plugin_draft_uploads','plugin_draft_chunks','plugin_draft_holds','document_drafts','draft_chunks','draft_chunk_stages','draft_chunk_refs','draft_upload_operations','draft_operation_chunks')",
             [],
             |row| row.get(0),
         )
@@ -137,7 +137,7 @@ fn every_reference_blocks_removal_and_query_never_creates_storage() {
     let archive = snapshot_directory(temp.path(), None, "ui-web").unwrap();
     let mut repo = PluginRepository::open(&temp.path().join("store")).unwrap();
     repo.import(&archive).unwrap();
-    for kind in ["instance", "operation", "document"] {
+    for kind in ["instance", "operation"] {
         repo.retain(kind, "original-identity", &archive.revision.id)
             .unwrap();
         match repo.remove(&archive.revision.id).unwrap_err() {
@@ -316,7 +316,7 @@ fn catalog_pagination_is_bounded_and_an_incompatible_store_is_not_modified() {
     let connection = rusqlite::Connection::open(incompatible.join("catalog-v1.sqlite3")).unwrap();
     connection
         .execute_batch(
-            "CREATE TABLE plugin_schema(version INTEGER); INSERT INTO plugin_schema VALUES(2);",
+            "CREATE TABLE plugin_schema(version INTEGER); INSERT INTO plugin_schema VALUES(1);",
         )
         .unwrap();
     assert!(PluginRepository::open(&incompatible).is_err());

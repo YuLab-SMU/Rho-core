@@ -12,7 +12,7 @@ The [responsibility transfer requirements](docs/RESPONSIBILITY-TRANSFER.md) name
 the owners of development, presentation and draft capabilities leaving Core.
 Development test-project orchestration, editable source branches, checkpoints and
 build execution, development preview, scenarios, layout and visual models have
-been removed. The draft cut remains planned.
+been removed, together with synchronized drafts and saved view content.
 This breaking upgrade uses fresh projects and storage. Old projects,
 directories and history are not migration or recovery requirements. New Operations
 still retain their original requests, outcomes and uncertainty.
@@ -47,6 +47,14 @@ Core accepts existing immutable package content. It does not run a package build
 recipe, maintain editable source heads or manage build directories. Package source
 listing, bounded reads and immutable revision comparison remain read-only. Source
 and build metadata describe package provenance; they do not authorize execution.
+
+Core does not manage editor buffers, upload leases for drafts, scene definitions or
+window layouts. Views retain only immutable bootstrap configuration, resource
+context and connection identity. Owners prepare their own content before a
+cooperative close; an explicit disconnect checks the observed connection and makes
+no claim about saved bytes. Generic resources, declared grants and original
+Operations remain the shared mechanisms. The package catalog format is version 2;
+previous catalogs are rejected before mutation, with no automatic migration.
 
 Context search and references are windowless: an external caller addresses the
 provider and its owner-defined selector directly. `cargo test -p rho-cli --test

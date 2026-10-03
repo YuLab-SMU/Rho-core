@@ -29,8 +29,8 @@ impl PluginRepository {
         let connection = Connection::open(root.join("catalog-v1.sqlite3"))?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS plugin_schema(version INTEGER PRIMARY KEY CHECK(version=1));
-            INSERT OR IGNORE INTO plugin_schema VALUES(1);
+            CREATE TABLE IF NOT EXISTS plugin_schema(version INTEGER PRIMARY KEY CHECK(version=2));
+            INSERT OR IGNORE INTO plugin_schema VALUES(2);
             CREATE TABLE IF NOT EXISTS revisions(id TEXT PRIMARY KEY, plugin TEXT NOT NULL, document TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, revision TEXT NOT NULL REFERENCES revisions(id) ON DELETE CASCADE, document TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS blobs(digest TEXT PRIMARY KEY, bytes BLOB NOT NULL);
@@ -43,7 +43,6 @@ impl PluginRepository {
             CREATE TABLE IF NOT EXISTS plugin_views(id TEXT PRIMARY KEY, project TEXT NOT NULL, principal TEXT NOT NULL, document TEXT NOT NULL);
             ")?;
         crate::archives::initialize(&connection)?;
-        crate::drafts::initialize(&connection)?;
         Ok(Self { root, connection })
     }
 
@@ -60,7 +59,7 @@ impl PluginRepository {
         connection.busy_timeout(Duration::from_secs(5))?;
         let version: i64 =
             connection.query_row("SELECT version FROM plugin_schema", [], |row| row.get(0))?;
-        ensure(version == 1, "unsupported plugin repository version")?;
+        ensure(version == 2, "unsupported plugin repository version")?;
         Ok(Some(Self { root, connection }))
     }
 
@@ -319,7 +318,6 @@ impl PluginRepository {
                     | "view"
                     | "operation"
                     | "management"
-                    | "document"
                     | "archive_export"
                     | "archive_import"
             ),
@@ -364,7 +362,6 @@ impl PluginRepository {
                     | "view"
                     | "operation"
                     | "management"
-                    | "document"
                     | "archive_export"
                     | "archive_import"
             ),

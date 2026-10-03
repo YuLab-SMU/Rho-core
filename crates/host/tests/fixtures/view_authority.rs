@@ -10,13 +10,13 @@ async fn own_backend_retains_selected_authority_without_lending_it_to_foreign_pr
     package(&source);
     let manifest_path = source.join("plugin.json");
     let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    // Only the selected optional grant supplies documents.read to this view.
+    // Only the selected optional grant supplies resources.read to this view.
     manifest["requires"] = json!([
         {"capability":{"id":"fixture.origin","version":1},"scopes":["plugins.read"]}
     ]);
     manifest["optional_requires"] = json!([
-        {"capability":{"id":"documents.list","version":1},"scopes":["documents.read"]},
-        {"capability":{"id":"fixture.run","version":1},"scopes":["documents.read"]}
+        {"capability":{"id":"resources.list","version":1},"scopes":["resources.read"]},
+        {"capability":{"id":"fixture.run","version":1},"scopes":["resources.read"]}
     ]);
     fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     let archive = snapshot_directory(&source, None, &backend_target()).unwrap();
@@ -29,7 +29,7 @@ async fn own_backend_retains_selected_authority_without_lending_it_to_foreign_pr
     let mut identities = Vec::new();
     for (alias, selected) in [("selected", true), ("unselected", false)] {
         let optional = if selected {
-            json!([{"id":"documents.list","version":1},{"id":"fixture.run","version":1}])
+            json!([{"id":"resources.list","version":1},{"id":"fixture.run","version":1}])
         } else {
             json!([])
         };
@@ -40,9 +40,15 @@ async fn own_backend_retains_selected_authority_without_lending_it_to_foreign_pr
         identities.push(instance);
     }
     for (index, instance) in identities.iter().enumerate() {
-        let view = invoke(&host, &context, &format!("open-{index}"), "views.open", json!({
-            "instance":instance,"contribution":"view","window":"window-a","configuration":{},"state":{}
-        })).await;
+        let view = invoke(
+            &host,
+            &context,
+            &format!("open-{index}"),
+            "views.open",
+            json!({
+            "instance":instance,"contribution":"view","window":"window-a","configuration":{}}),
+        )
+        .await;
         let mut channel = Channel {
             connection: serde_json::from_value(
                 query(
@@ -81,7 +87,7 @@ async fn own_backend_retains_selected_authority_without_lending_it_to_foreign_pr
         assert_eq!(
             scopes,
             if index == 0 {
-                json!(["documents.read", "plugins.read"])
+                json!(["plugins.read", "resources.read"])
             } else {
                 json!(["plugins.read"])
             }
@@ -93,13 +99,19 @@ async fn own_backend_retains_selected_authority_without_lending_it_to_foreign_pr
                 "query",
                 "fixture.origin",
                 json!({
-                    "binding":binding,"arguments":{"host_arguments":listing("window-a")}
+                    "binding":binding,"arguments":{"capability":{"id":"resources.list","version":1},"host_arguments":{"after":null,"limit":20}}
                 }),
             )
             .await
             .unwrap();
         if index == 0 {
-            allowed(&delegated["data"], 0);
+            assert_eq!(delegated["data"]["delegated"]["type"], "host_result");
+            assert!(
+                delegated["data"]["delegated"]["data"]["result"]["data"]["items"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
             let mutation_binding = query(
                 &host,
                 &context,
@@ -121,7 +133,7 @@ async fn own_backend_retains_selected_authority_without_lending_it_to_foreign_pr
             assert_eq!(delegated["data"]["delegated"]["type"], "error");
         }
         let mut narrowed = context.clone();
-        narrowed.scopes.remove("documents.read");
+        narrowed.scopes.remove("resources.read");
         let narrowed_result = channel
             .call(
                 &host,
@@ -163,7 +175,7 @@ async fn own_backend_retains_selected_authority_without_lending_it_to_foreign_pr
             &format!("close-{index}"),
             "views.close",
             json!({
-                "view":view["view"],"mode":{"kind":"retain_acknowledged","expected_version":0}
+                "view":view["view"],"mode":{"kind":"disconnect","connection":channel.connection.connection}
             }),
         )
         .await;

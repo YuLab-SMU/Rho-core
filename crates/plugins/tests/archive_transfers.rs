@@ -13,7 +13,7 @@ fn package(path: &Path) -> PluginArchive {
         "protocol_version":1,"id":"example.archive","name":"Archive fixture","version":"1","description":"Independent package","license":"MIT",
         "source":{"files":["main.js"],"lockfiles":["deps.lock"],"build_instructions":"BUILD.md","build":null},
         "dependencies":{},"requires":[],"capabilities":[],"contexts":[],"backend":null,
-        "views":[{"id":"main","title":"Main","entrypoint":"dist/index.html","state_schema":{"type":"object"},"configuration_schema":{"type":"object"},"resource_kinds":[]}],
+        "views":[{"id":"main","title":"Main","entrypoint":"dist/index.html","configuration_schema":{"type":"object"},"resource_kinds":[]}],
         "configuration_schema":{"type":"object"},"default_configuration":{}
     })).unwrap()).unwrap();
     snapshot_directory(path, None, "ui-web").unwrap()

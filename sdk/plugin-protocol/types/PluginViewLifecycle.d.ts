@@ -2,4 +2,4 @@
 import type { PluginViewCloseState } from "./PluginViewCloseState.js";
 import type { ViewInstanceId } from "./ViewInstanceId.js";
 
-export type PluginViewLifecycle = { view: ViewInstanceId, state_version: number, close: PluginViewCloseState, };
+export type PluginViewLifecycle = { view: ViewInstanceId, close: PluginViewCloseState, };

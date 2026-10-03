@@ -195,8 +195,6 @@ pub struct ViewCallScope {
     /// Never accepted from plugin arguments or public backend RPC frames.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<rho_plugin_protocol::PluginViewOrigin>,
-    /// Close-time persistence may inspect only the originating view's encoding.
-    pub draft_source: Option<rho_plugin_protocol::DraftSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

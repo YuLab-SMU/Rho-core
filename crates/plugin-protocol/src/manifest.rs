@@ -75,7 +75,6 @@ pub struct ViewContribution {
     pub id: ContributionId,
     pub title: String,
     pub entrypoint: PackagePath,
-    pub state_schema: Value,
     pub configuration_schema: Value,
     pub resource_kinds: BTreeSet<String>,
 }
@@ -319,7 +318,6 @@ impl PluginManifest {
                 view.entrypoint.is_artifact(),
                 "view entrypoints must be immutable dist/ artifacts",
             )?;
-            schema_shape(&view.state_schema)?;
             schema_shape(&view.configuration_schema)?;
             for kind in &view.resource_kinds {
                 bounded_text(kind, 128, "resource kind")?;

@@ -14,9 +14,6 @@ export type { OperationIntent, OriginalOperationRecord } from './operations.js';
 export const UI_PROTOCOL_VERSION = 1;
 export const MAX_UI_MESSAGE_BYTES = 1024 * 1024;
 export const MAX_UI_PENDING = 128;
-const isDraftFlush = (body: PluginViewRequest) =>
-  (body.type === "control" && body.capability.id === "documents.stage" && body.capability.version === 1) ||
-  (body.type === "invoke" && body.capability.id === "documents.save" && body.capability.version === 1);
 export interface ViewInitialization {
   protocol_version: number;
   connection: string;
@@ -42,15 +39,14 @@ export function boundedJson(value: unknown): boolean {
   catch { return false; }
 }
 export { operationRequestId } from './operation-identity.js';
-/** One MessagePort belongs to one document lifetime. Disposing it never cancels
- * accepted Operations. Reopen the saved view through the containing shell. */
+/** One MessagePort belongs to one view connection lifetime. Disposing it never cancels
+ * accepted Operations. Reconnect the retained view identity through the containing shell. */
 export class PluginViewClient {
   private sequence = 0;
   private responseSequence = 0;
   private pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
   private closed = false;
   private current: PluginViewRecord;
-  private stateQueue: Promise<unknown> = Promise.resolve();
   private closeCooperation: ViewCloseCooperation | null = null;
   constructor(private port: MessagePort, readonly initialization: ViewInitialization) {
     this.current = structuredClone(initialization.view);
@@ -63,7 +59,6 @@ export class PluginViewClient {
     if (!this.initialization.features?.includes("view_close_v1")) throw new Error("View close cooperation is unavailable in this container.");
     if (this.closeCooperation) throw new Error("This document already has a close handler.");
     const cooperation = new ViewCloseCooperation({ view: this.current.view,
-      version: () => this.current.state_version, stateSettled: () => this.stateQueue,
       request: <T>(body: PluginViewRequest) => this.request<T>(body) }, handler);
     this.closeCooperation = cooperation;
     try { await cooperation.start(); return cooperation; }
@@ -71,8 +66,6 @@ export class PluginViewClient {
   }
   request<T = unknown>(body: PluginViewRequest): Promise<T> {
     if (this.closed) return Promise.reject(new Error("View connection is closed"));
-    if (this.closeCooperation?.getSnapshot().preparing && !isDraftFlush(body) && ["invoke", "control", "cancel", "begin_text_copy", "finish_text_copy", "open_external_url", "download_resource", "download_archive"].includes(body.type))
-      return Promise.reject(new Error("View closure is preparing; wait before starting another action."));
     if (this.pending.size >= MAX_UI_PENDING) return Promise.reject(new Error("View request quota reached"));
     if (this.sequence >= 0xffffffff) { this.dispose("View sequence exhausted"); return Promise.reject(new Error("View sequence exhausted")); }
     const request = crypto.randomUUID();
@@ -149,17 +142,6 @@ export class PluginViewClient {
       if (!confirmed) await this.request({ type: "cancel_text_copy", copy_id: reservation.copy_id }).catch(() => undefined);
     }
   }
-  setState(state: JsonValue): Promise<PluginViewRecord> {
-    const captured = structuredClone(state);
-    const task = this.stateQueue.then(async () => {
-      const result = await this.request<{ status: string; output?: PluginViewRecord; error?: unknown }>({ type: "set_state", expected_version: this.current.state_version, state: captured });
-      if (result.status !== "succeeded" || !result.output) throw new Error("View state was not saved; inspect its Operation before retrying");
-      this.current = structuredClone(result.output);
-      return this.view;
-    });
-    this.stateQueue = task.catch(() => undefined);
-    return task;
-  }
   dispose(reason = "View connection closed") {
     if (this.closed) return;
     this.closed = true;
@@ -206,7 +188,5 @@ export function connectPluginView(timeoutMs = 15000): Promise<PluginViewClient> 
 
 export { readResource, isResourceReference, sameResource, DEFAULT_RESOURCE_VIEW_BYTES } from "./resources.js";
 export type { ResourceReference, ResourceReader } from "./resources.js";
-export { captureDraftContent, stageDraftContent, readDraft, isDraftContent, isDocumentDraft, MAX_DRAFT_BYTES, DRAFT_CHUNK_BYTES } from "./drafts.js";
-export type { CapturedDraftContent, DraftReader, DraftWriter, DocumentDraft, DraftContent } from "./drafts.js";
 export { capturePluginArchive, stagePluginArchive, readPluginArchive, isPluginArchiveReference, samePluginArchive, ARCHIVE_CHUNK_BYTES, MAX_PLUGIN_ARCHIVE_BYTES } from "./archives.js";
 export type { CapturedPluginArchive, ArchiveReader, ArchiveWriter, PluginArchiveReference, PluginArchiveProgress } from "./archives.js";

@@ -31,7 +31,7 @@ impl Fixture {
         fs::write(source.join("deps.lock"), "none").unwrap();
         fs::write(source.join("BUILD.md"), "Copy index.html into dist").unwrap();
         let requires=["plugins.archive_stage","plugins.archive_progress","plugins.archive_inspect","plugins.archive_read","plugins.archive_receipt","plugins.archive_import","plugins.archive_export"].map(|id|json!({"capability":{"id":id,"version":1},"scopes":[if matches!(id,"plugins.archive_stage"|"plugins.archive_import") {"plugins.write"} else {"plugins.read"}]}));
-        fs::write(source.join("plugin.json"),serde_json::to_vec(&json!({"protocol_version":1,"id":"example.archive","name":"Independent archive","version":"1","description":"Public archive acceptance","license":"MIT","source":{"files":["index.html"],"lockfiles":["deps.lock"],"build_instructions":"BUILD.md","build":null},"dependencies":{},"requires":requires,"capabilities":[],"contexts":[],"backend":null,"views":[{"id":"archive","title":"Archive","entrypoint":"dist/index.html","state_schema":{"type":"object"},"configuration_schema":{"type":"object"},"resource_kinds":[]}],"configuration_schema":{"type":"object"},"default_configuration":{}})).unwrap()).unwrap();
+        fs::write(source.join("plugin.json"),serde_json::to_vec(&json!({"protocol_version":1,"id":"example.archive","name":"Independent archive","version":"1","description":"Public archive acceptance","license":"MIT","source":{"files":["index.html"],"lockfiles":["deps.lock"],"build_instructions":"BUILD.md","build":null},"dependencies":{},"requires":requires,"capabilities":[],"contexts":[],"backend":null,"views":[{"id":"archive","title":"Archive","entrypoint":"dist/index.html","configuration_schema":{"type":"object"},"resource_kinds":[]}],"configuration_schema":{"type":"object"},"default_configuration":{}})).unwrap()).unwrap();
         let archive = snapshot_directory(&source, None, "ui-web").unwrap();
         let bytes = serde_json::to_vec_pretty(&archive).unwrap();
         let db = temp.path().join("host.sqlite");
@@ -556,7 +556,17 @@ async fn ordinary_view_uses_declared_archive_ports_and_native_principal() {
     )
     .await;
     let instance=run(&h,&c,"activate","plugins.activate",json!({"revision":f.archive.revision.id,"artifact":f.archive.artifacts[0].id,"target":"ui-web","alias":"archive","configuration":{}})).await.output.unwrap()["instance"]["identity"].clone();
-    let view=run(&h,&c,"open","views.open",json!({"instance":instance,"contribution":"archive","window":"window","configuration":{},"state":{}})).await.output.unwrap()["view"].clone();
+    let view = run(
+        &h,
+        &c,
+        "open",
+        "views.open",
+        json!({"instance":instance,"contribution":"archive","window":"window","configuration":{}}),
+    )
+    .await
+    .output
+    .unwrap()["view"]
+        .clone();
     let connection: PluginViewConnection = serde_json::from_value(
         query(&h, &c, "views.connection", json!({"view":view}))
             .await

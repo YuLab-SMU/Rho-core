@@ -278,34 +278,6 @@ impl NextHost {
                     HostRequest::GetOperation { operation_id: id }
                 }
             }
-            PluginViewRequest::SetState {
-                expected_version,
-                state,
-            } => {
-                // Intrinsic self-state authority cannot name another view or any
-                // other capability. The original parent still needs plugins.run.
-                context.scopes = parent
-                    .scopes
-                    .intersection(&[rho_plugins::PLUGINS_RUN_SCOPE.to_string()].into())
-                    .cloned()
-                    .collect();
-                HostRequest::Invoke(rho_contract::InvokeRequest {
-                    invocation: Invocation {
-                        client_request_id: rho_plugins::content_digest(
-                            format!("{}:{}", message.view, message.request).as_bytes(),
-                        )
-                        .to_string(),
-                        capability: CapabilityRef::new("views.update", 1)?,
-                        arguments: json!(UpdatePluginView {
-                            view: message.view,
-                            expected_version,
-                            state
-                        }),
-                        preconditions: vec![],
-                    },
-                    return_after_acceptance: Some(false),
-                })
-            }
         };
         self.dispatch(&context, request).await
     }

@@ -11,6 +11,6 @@ export type PluginViewConnection = { view: PluginViewRecord, connection: Connect
 asset_token: string,
 /**
  * Retained by the containing shell. Never sent to the iframe or stored in
- * Operation records, scenarios, view state or source packages.
+ * Operation records or source packages.
  */
 call_token: string, entrypoint: PackagePath, grants: Array<CapabilityRequirement>, };

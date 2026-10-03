@@ -523,10 +523,6 @@ async fn reverse_calls_inherit_active_parent_and_declared_scope_without_host_cre
             window: WindowId::new("origin-window").unwrap(),
             connection: ConnectionId::new("origin-connection").unwrap(),
         }),
-        draft_source: Some(DraftSource {
-            revision: instance.identity.revision.clone(),
-            contribution: ContributionId::new("document").unwrap(),
-        }),
     };
     let reply = data(
         lease

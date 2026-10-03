@@ -354,7 +354,7 @@ fn validate_schemas(manifest: &PluginManifest) -> Result<(), PluginError> {
     // jsonschema is built without HTTP/file resolution; refs are package-local schemas.
     let mut schemas = vec![&manifest.configuration_schema];
     for view in &manifest.views {
-        schemas.extend([&view.configuration_schema, &view.state_schema]);
+        schemas.push(&view.configuration_schema);
     }
     for cap in &manifest.capabilities {
         schemas.extend([&cap.input_schema, &cap.output_schema, &cap.recovery_schema]);

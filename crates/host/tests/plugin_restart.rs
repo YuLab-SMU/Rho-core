@@ -18,7 +18,7 @@ fn package(path: &Path) -> PluginArchive {
         .unwrap()
         .push(json!("index.html"));
     manifest["views"] = json!([{"id":"view","title":"Retained view","entrypoint":"dist/index.html",
-        "state_schema":{"type":"object"},"configuration_schema":{"type":"object"},"resource_kinds":[]}]);
+        "configuration_schema":{"type":"object"},"resource_kinds":[]}]);
     fs::write(
         path.join("index.html"),
         "<!doctype html><p>Restart fixture</p>",
@@ -109,9 +109,7 @@ async fn host_restart_preserves_instance_view_and_original_operation_without_aut
         "open",
         "views.open",
         json!({
-            "instance":identity,"contribution":"view","window":"original-window","configuration":{},
-                "state":{"draft":"未发送的内容","original_request":"original-send"}
-        }),
+            "instance":identity,"contribution":"view","window":"original-window","configuration":{}}),
     )
     .await
     .output
@@ -209,7 +207,7 @@ async fn host_restart_preserves_instance_view_and_original_operation_without_aut
         "1",
         "queries must not start a backend"
     );
-    let reconnect = json!({"view":view["view"],"expected_version":view["state_version"]});
+    let reconnect = json!({"view":view["view"]});
     refused(
         &host,
         &context,
@@ -385,7 +383,7 @@ async fn host_restart_preserves_instance_view_and_original_operation_without_aut
         "close-retained",
         "views.close",
         json!({"view":view["view"],
-        "mode":{"kind":"retain_acknowledged","expected_version":view["state_version"]}}),
+        "mode":{"kind":"disconnect","connection":null}}),
     )
     .await;
     let released = run(

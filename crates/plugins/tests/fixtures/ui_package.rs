@@ -1,5 +1,5 @@
-use std::{fs, path::Path};
 use serde_json::json;
+use std::{fs, path::Path};
 fn source(path: &Path) {
     fs::create_dir_all(path.join("src")).unwrap();
     fs::create_dir_all(path.join("dist")).unwrap();
@@ -29,7 +29,7 @@ fn source(path: &Path) {
         "source": { "files": ["src/view.ts"], "lockfiles": ["deps.lock"], "build_instructions": "BUILD.md", "build": null },
         "dependencies": {}, "requires": [], "capabilities": [], "contexts": [], "backend": null,
         "views": [{ "id": "report", "title": "Report", "entrypoint": "dist/index.html",
-            "state_schema": {"type":"object"}, "configuration_schema": {"type":"object"}, "resource_kinds": [] }],
+             "configuration_schema": {"type":"object"}, "resource_kinds": [] }],
         "configuration_schema": {"type":"object", "additionalProperties":false}, "default_configuration": {}
     })).unwrap()).unwrap();
 }
@@ -41,6 +41,9 @@ pub fn package(path: &Path) -> rho_plugin_protocol::PluginArchive {
 
 pub fn install(database: &Path, package_root: &Path) -> serde_json::Value {
     let archive = package(package_root);
-    rho_plugins::PluginRepository::open(&rho_plugins::repository_path(database)).unwrap().import(&archive).unwrap();
+    rho_plugins::PluginRepository::open(&rho_plugins::repository_path(database))
+        .unwrap()
+        .import(&archive)
+        .unwrap();
     json!({"revision":archive.revision.id,"artifact":archive.artifacts[0].id,"target":"ui-web","alias":"edge","configuration":{}})
 }

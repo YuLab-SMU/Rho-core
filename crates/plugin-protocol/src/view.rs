@@ -1,5 +1,5 @@
-//! Isolated view lifecycle and the public browser channel. State belongs to one
-//! exact source revision; closing a view never requests backend cancellation.
+//! Isolated view lifecycle and the public browser channel. Content belongs to
+//! its owner; closing a view never requests backend cancellation.
 use crate::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,6 @@ pub struct OpenPluginView {
     pub contribution: ContributionId,
     pub window: WindowId,
     pub configuration: Value,
-    pub state: Value,
     /// Immutable resource context; it confers no resource-read authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -27,12 +26,12 @@ pub struct PluginViewArguments {
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PluginViewCloseMode {
-    /// Ask the connected view to flush its draft before native closure.
+    /// Each registered participant confirms its owner-defined preparation.
     #[default]
-    Flush,
-    /// Explicit recovery when cooperation is unavailable. Keeps exactly this
-    /// acknowledged version; does not claim that local edits have been saved.
-    RetainAcknowledged { expected_version: u32 },
+    Cooperate,
+    /// Explicitly detach this observed connection, or a retained detached view.
+    /// This does not establish that content was saved or native work stopped.
+    Disconnect { connection: Option<ConnectionId> },
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields)]
@@ -50,7 +49,6 @@ pub enum PluginViewCloseState {
     },
     Prepared {
         operation: OperationId,
-        state_version: u32,
     },
     Refused {
         operation: OperationId,
@@ -61,7 +59,6 @@ pub enum PluginViewCloseState {
 #[serde(deny_unknown_fields)]
 pub struct PluginViewLifecycle {
     pub view: ViewInstanceId,
-    pub state_version: u32,
     pub close: PluginViewCloseState,
 }
 /// Sent by the containing shell after this exact document is destroyed. The
@@ -84,22 +81,12 @@ pub struct PluginViewRendererRelease {
     /// never saved content, view closure or backend release.
     pub released: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(deny_unknown_fields)]
-pub struct UpdatePluginView {
-    pub view: ViewInstanceId,
-    /// An owner-specific state version, never a global scientific revision.
-    pub expected_version: u32,
-    pub state: Value,
-}
-
 /// Reattach the retained view of an already active instance without creating a
-/// new document, changing its state or replaying an earlier invocation.
+/// new view identity or replaying an earlier invocation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ReconnectPluginView {
     pub view: ViewInstanceId,
-    pub expected_version: u32,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields)]
@@ -111,11 +98,9 @@ pub struct PluginViewRecord {
     pub contribution: ContributionId,
     pub window: WindowId,
     pub configuration: Value,
-    pub state: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub resource: Option<ResourceReference>,
-    pub state_version: u32,
     pub closed: bool,
 }
 /// Host-observed calling view identity. This contains no bridge or asset token
@@ -161,7 +146,7 @@ pub struct PluginViewConnection {
     /// Short-lived asset authority for this view's exact immutable artifact only.
     pub asset_token: String,
     /// Retained by the containing shell. Never sent to the iframe or stored in
-    /// Operation records, scenarios, view state or source packages.
+    /// Operation records or source packages.
     pub call_token: String,
     pub entrypoint: PackagePath,
     pub grants: Vec<CapabilityRequirement>,
@@ -172,7 +157,7 @@ pub struct PluginViewConnection {
 #[derive(Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PluginViewRequest {
-    /// Register only after installing the local close-time flush handler.
+    /// Register only after installing the owner's close preparation handler.
     RegisterCloseHandler {
         renderer: RequestId,
     },
@@ -182,7 +167,6 @@ pub enum PluginViewRequest {
     PrepareClose {
         renderer: RequestId,
         operation: OperationId,
-        state_version: u32,
     },
     RefuseClose {
         renderer: RequestId,
@@ -236,10 +220,6 @@ pub enum PluginViewRequest {
     Cancel {
         operation_id: String,
     },
-    SetState {
-        expected_version: u32,
-        state: Value,
-    },
 }
 impl std::fmt::Debug for PluginViewRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -259,7 +239,6 @@ impl std::fmt::Debug for PluginViewRequest {
             Self::Invoke { .. } => "Invoke",
             Self::GetOperation { .. } => "GetOperation",
             Self::Cancel { .. } => "Cancel",
-            Self::SetState { .. } => "SetState",
         };
         f.write_str(kind)?;
         f.write_str(" ([payload redacted])")
