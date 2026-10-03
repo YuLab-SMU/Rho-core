@@ -91,16 +91,44 @@ refresh and product integration remain separate owner tasks.
 
 ## Focused verification
 
-Select the affected behavior; run Cargo commands serially in this checkout.
+Start with the concrete user action, its observable result and a plausible failure.
+Reuse the smallest existing test that distinguishes that failure from correct
+behavior. Add a case only when it covers a missing outcome or trust boundary;
+changing a file or adding a field alone does not require another test.
 
-- Host ownership, observations and disconnected work: `cargo test -p rho-host --test plugin_workspace --test observer --test plugin_restart --test plugin_view_delegation --locked`.
-- Operation controls and native lifecycle: `cargo test -p rho-host --test plugins --locked`.
-- Actual CLI/MCP callers and read purity: `cargo test -p rho-cli --test headless --test connection --test query_purity --locked`.
-- Independent binary and source closure: `cargo build --locked`, then `node scripts/check-boundaries.mjs`.
+Examples below select different responsibilities, not a mandatory combined suite.
+Run Cargo commands serially in this checkout.
 
-These are Core boundary checks with disposable projects and minimal callers.
-Application assembly, consumer SDK refresh and scientific owner acceptance are
-separately selected work. See [README](../README.md) for launch and SDK export usage.
+| Changed intent | Select the relevant check |
+| --- | --- |
+| An external caller reads and acts without a window, retries an original request, or needs a launcher grant | `cargo test -p rho-cli --test headless --locked` |
+| A query must leave storage and a live writer alone | `cargo test -p rho-cli --test query_purity --locked` |
+| A package is inspected without execution, round-trips unchanged, or refuses an incompatible catalog | `cargo test -p rho-plugins --test package_repository --locked` |
+| A view may close only after participant confirmation | `cargo test -p rho-host --test plugins close_requires_owner_preparation --locked` |
+| Accepted work survives disconnect, cancellation or lost native settlement | Select the matching test in `rho-host --test plugins` or `--test plugin_delegated_operations` |
+| A validated result cannot commit, then must reconcile without native reexecution | `cargo test -p rho-sqlite --lib commit_recovery_tests --locked` |
+| A shared transport changes framing, authentication or response handling | Select `rho-cli --test session`, `--test connection`, `rho-mcp`, or `rho-workbench` according to the changed edge |
+
+Assert observable effects and retained identities: actual owner execution counts,
+unchanged bytes after refusal, original records after retry, and an open connection
+when preparation is missing. Do not keep inventories of deleted capabilities,
+private table names or exact diagnostic wording as substitutes for these results.
+SQL fault injection is useful when it exposes a commit failure that a public caller
+must handle; merely counting implementation tables is not acceptance.
+
+Use virtual time for a timer-only timeout, and ordinary time for native process or
+I/O cooperation. Tests must still pass through the timeout and inspect its outcome.
+A protocol fixture proves Core authority, dispatch and settlement; it does not prove
+a scientific conclusion or an Owner's native behavior. The former ignored Agent,
+real-R and Files product suites are retired from Core; selected scientific and
+composition acceptance belongs to the corresponding source owner or application.
+No consumer SDK refresh, domain migration or composition is implied by a Core pass.
+
+For changed production dependencies or assembly, build the independent binary and
+check source closure with `cargo build --locked` and
+`node scripts/check-boundaries.mjs`. For test-only edits, run the affected checks;
+do not rebuild the product or run unrelated native workflows to increase a count.
+Use prior passing evidence when it still covers unchanged behavior.
 
 For UI SDK changes, compile and test the public browser handshake independently:
 

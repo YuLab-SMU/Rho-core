@@ -99,52 +99,24 @@ impl Session {
 }
 
 #[test]
-fn ordinary_host_rejects_retired_product_work_without_recording_an_operation() {
+fn unavailable_owner_cannot_execute_or_admit_work_and_explicit_activation_enables_it() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("catalog.sqlite");
     let project = dir.path().join("project");
     fs::create_dir(&project).unwrap();
-    let (mut session, ready) = Session::open(&db, &project, &[]);
-    let retired = [
-        "plugins.build",
-        "plugins.branch",
-        "plugins.advance_branch",
-        "plugins.checkpoint",
-        "plugins.branches",
-        "plugins.branch_head",
-        "plugins.check_source",
-        "plugins.preview",
-        "windows.layout",
-        "windows.update_layout",
-        "windows.open_view",
-        "windows.scenario",
-        "windows.resolve",
-        "scenarios.list",
-        "scenarios.get",
-        "scenarios.prepare",
-        "scenarios.apply",
-        "scenarios.checkpoint",
-        "documents.stage",
-        "documents.save",
-        "documents.inspect",
-        "documents.list",
-        "documents.read",
-        "documents.discard",
-        "views.update",
-    ];
-    let capabilities = ready["capabilities"].as_array().unwrap();
-    for id in retired {
-        assert!(
-            !capabilities.iter().any(|cap| cap["capability"]["id"] == id),
-            "{id}"
-        );
-        let reply = session.invoke(id, id, json!({}));
-        assert_eq!(reply["ok"], false, "{reply}");
-        assert!(
-            reply["error"].as_str().unwrap().contains("not registered"),
-            "{reply}"
-        );
-    }
+    let archive = package(&dir.path().join("package"));
+    PluginRepository::open(&repository_path(&db))
+        .unwrap()
+        .import(&archive)
+        .unwrap();
+    let (mut session, _) = Session::open(&db, &project, &[DOMAIN_SCOPE]);
+    let rejected = session.invoke(
+        "unavailable",
+        "fixture.notes.append",
+        json!({"note":"alpha","expected_version":1,"text":"must not execute"}),
+    );
+    assert_eq!(rejected["ok"], false, "{rejected}");
+    assert_eq!(rejected["diagnostic"]["code"], "unavailable", "{rejected}");
     let records = session.query("operation.list_recent", json!({}));
     assert!(
         records["result"]["data"]["operations"]
@@ -153,7 +125,38 @@ fn ordinary_host_rejects_retired_product_work_without_recording_an_operation() {
             .is_empty(),
         "{records}"
     );
-    assert!(!repository_path(&db).join("builds-v1").exists());
+    assert!(
+        !project.join("provider-starts.log").exists(),
+        "a failed call must not start the installed owner"
+    );
+
+    let activated = session.invoke(
+        "activate",
+        "plugins.activate",
+        json!({
+        "revision":archive.revision.id,"artifact":archive.artifacts[0].id,
+        "target":backend_target(),"alias":"notes","configuration":{}}),
+    );
+    assert_eq!(activated["result"]["status"], "succeeded", "{activated}");
+    let instance = activated["result"]["output"]["instance"]["identity"].clone();
+    let resolved = session.query(
+        "plugins.resolve",
+        json!({"instance":instance,
+        "capability":{"id":"fixture.notes.append","version":1}}),
+    );
+    let executed = session.invoke(
+        "available",
+        "fixture.notes.append",
+        json!({
+        "binding":resolved["result"]["data"],
+        "arguments":{"note":"alpha","expected_version":1,"text":"authorized"}}),
+    );
+    assert_eq!(executed["result"]["status"], "succeeded", "{executed}");
+    assert_eq!(executed["result"]["output"]["executions"], 1);
+    assert_eq!(
+        fs::read(project.join("provider-starts.log")).unwrap(),
+        b"start\n"
+    );
     session.close();
 }
 
@@ -230,14 +233,8 @@ fn external_tool_manages_independent_hosts_and_reads_each_original_journal() {
             (project, db)
         })
         .collect();
-    let (mut one, ready) = Session::open(&projects[0].1, &projects[0].0, &[DOMAIN_SCOPE]);
+    let (mut one, _) = Session::open(&projects[0].1, &projects[0].0, &[DOMAIN_SCOPE]);
     let (mut two, _) = Session::open(&projects[1].1, &projects[1].0, &[DOMAIN_SCOPE]);
-    assert!(ready["capabilities"].as_array().unwrap().iter().all(|cap| {
-        !cap["capability"]["id"]
-            .as_str()
-            .unwrap()
-            .starts_with("plugins.test_")
-    }));
     let activate = json!({"revision":archive.revision.id,"artifact":archive.artifacts[0].id,
         "target":backend_target(),"alias":"notes","configuration":{}});
     let original = one.invoke("activate", "plugins.activate", activate.clone());
@@ -262,12 +259,6 @@ fn external_tool_manages_independent_hosts_and_reads_each_original_journal() {
         input.flush().unwrap();
         let reply = one.line();
         assert_eq!(reply["ok"], false, "{reply}");
-        assert!(
-            reply["error"]
-                .as_str()
-                .unwrap()
-                .contains("unknown field `test_project`")
-        );
     }
     assert_eq!(
         one.query("plugins.instances", json!({"limit":20}))["result"]["data"]["total"],

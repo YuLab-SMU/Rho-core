@@ -48,53 +48,19 @@ fn standalone_queries_leave_new_projects_and_missing_databases_uninitialized() {
         let reply: Value = serde_json::from_slice(&result.stdout).unwrap();
         assert_eq!(reply["observation"]["status"], "ready");
     }
-    for capability in [
-        "project.read_text",
-        "output.read_text",
-        "workspace.snapshot",
-    ] {
-        let result = observer(&database, &project, capability, json!({}));
-        assert!(!result.status.success(), "{capability}");
-        let error: Value = serde_json::from_slice(&result.stderr).unwrap();
-        assert!(
-            error["error"]
-                .as_str()
-                .unwrap()
-                .contains("existing plugin Host")
-        );
-    }
+    let unavailable = observer(
+        &database,
+        &project,
+        "fixture.notes.observe",
+        json!({"mode":"live"}),
+    );
+    assert!(!unavailable.status.success());
     assert!(!database.parent().unwrap().exists());
     assert!(!project.join(".rho").exists());
     assert_eq!(
         fs::read(project.join("notes.txt")).unwrap(),
         b"read-only evidence\n"
     );
-}
-#[test]
-fn query_rejects_runtime_startup_flags_before_creating_any_host_material() {
-    let dir = tempfile::tempdir().unwrap();
-    let project = dir.path().join("project");
-    fs::create_dir(&project).unwrap();
-    let database = dir.path().join("unused/state.sqlite");
-    for arguments in [
-        vec!["--ark", "/unavailable/ark", "--r-home", "/unavailable/R"],
-        vec!["--rscript", "/unavailable/Rscript"],
-        vec!["--demo"],
-    ] {
-        let result = Command::new(env!("CARGO_BIN_EXE_rho"))
-            .arg("--database")
-            .arg(&database)
-            .arg("--project")
-            .arg(&project)
-            .args(arguments)
-            .args(["query", "--capability", "host.overview"])
-            .output()
-            .unwrap();
-        assert!(!result.status.success());
-        assert!(String::from_utf8_lossy(&result.stderr).contains("unexpected argument"));
-        assert!(!database.parent().unwrap().exists());
-        assert!(!project.join(".rho").exists());
-    }
 }
 #[test]
 fn cli_queries_read_while_a_real_project_host_owns_the_writer_and_project_lease() {

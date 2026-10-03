@@ -38,23 +38,6 @@ fn fixture(path: &Path) {
 }
 
 #[test]
-fn fresh_catalog_has_no_development_storage() {
-    let temp = tempfile::tempdir().unwrap();
-    let repo = PluginRepository::open(temp.path()).unwrap();
-    let connection = rusqlite::Connection::open(repo.root().join("catalog-v1.sqlite3")).unwrap();
-    let tables: u32 = connection
-        .query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE name IN ('plugin_test_projects','branches','plugin_branch_origins','plugin_window_layouts','plugin_scenario_revisions','plugin_scenario_heads','plugin_window_scenarios','plugin_document_drafts','plugin_draft_uploads','plugin_draft_chunks','plugin_draft_holds','document_drafts','draft_chunks','draft_chunk_stages','draft_chunk_refs','draft_upload_operations','draft_operation_chunks')",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(tables, 0);
-    assert!(!repo.root().join("test-projects-v1").exists());
-    assert!(!repo.root().join("builds-v1").exists());
-}
-
-#[test]
 fn external_package_export_remove_reimport_has_identical_identity_and_permissions() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("external");
@@ -271,29 +254,65 @@ fn native_code_and_build_recipes_are_not_executed_during_snapshot_or_import() {
     let path = temp.path().join("plugin.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    manifest["source"]["build"] =
-        json!({"command":["definitely-not-an-installed-toolchain", "--install"]});
+    let build_effect = temp.path().join("build-ran");
+    let native_effect = temp.path().join("native-ran");
+    let write_marker = |marker: &Path| {
+        format!(
+            "from pathlib import Path; Path({}).write_text('executed')",
+            serde_json::to_string(&marker.to_string_lossy()).unwrap()
+        )
+    };
+    manifest["source"]["build"] = json!({"command":["python3", "-c", write_marker(&build_effect)]});
+    let backend = format!("#!/usr/bin/env python3\n{}\n", write_marker(&native_effect));
+    fs::write(temp.path().join("src/backend.py"), &backend).unwrap();
+    fs::write(temp.path().join("dist/backend"), &backend).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            temp.path().join("dist/backend"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    manifest["source"]["files"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("src/backend.py"));
+    manifest["backend"] = json!({"executable":"dist/backend","arguments":[]});
     fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-    let archive = snapshot_directory(temp.path(), None, "ui-web").unwrap();
+    let archive = snapshot_directory(temp.path(), None, &backend_target()).unwrap();
     let mut repo = PluginRepository::open(&temp.path().join("store")).unwrap();
     repo.import(&archive).unwrap();
-    assert_eq!(repo.list().unwrap().len(), 1);
+    assert_eq!(repo.export(&archive.revision.id).unwrap(), archive);
+    assert!(
+        !build_effect.exists(),
+        "package inspection must not execute a build recipe"
+    );
+    assert!(
+        !native_effect.exists(),
+        "package import must not start its native owner"
+    );
 }
 
 #[test]
-fn catalog_pagination_is_bounded_and_an_incompatible_store_is_not_modified() {
+fn catalog_pagination_returns_every_installed_revision_once() {
     let temp = tempfile::tempdir().unwrap();
     fixture(temp.path());
     let root = temp.path().join("store");
     let mut repo = PluginRepository::open(&root).unwrap();
+    let mut installed = vec![];
     for index in 0..5 {
         fs::write(
             temp.path().join("src/view.ts"),
             format!("document.body.textContent='{index}';"),
         )
         .unwrap();
-        repo.import(&snapshot_directory(temp.path(), None, "ui-web").unwrap())
-            .unwrap();
+        installed.push(
+            repo.import(&snapshot_directory(temp.path(), None, "ui-web").unwrap())
+                .unwrap()
+                .revision,
+        );
     }
     assert!(repo.list_page(None, 0).is_err());
     assert!(repo.list_page(None, 101).is_err());
@@ -309,8 +328,16 @@ fn catalog_pagination_is_bounded_and_an_incompatible_store_is_not_modified() {
             break;
         }
     }
-    assert_eq!(ids.len(), 5);
-    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+    installed.sort();
+    assert_eq!(
+        ids, installed,
+        "pagination must neither lose nor duplicate a revision"
+    );
+}
+
+#[test]
+fn previous_catalog_is_rejected_without_changing_its_bytes() {
+    let temp = tempfile::tempdir().unwrap();
     let incompatible = temp.path().join("incompatible");
     fs::create_dir(&incompatible).unwrap();
     let connection = rusqlite::Connection::open(incompatible.join("catalog-v1.sqlite3")).unwrap();
@@ -319,15 +346,12 @@ fn catalog_pagination_is_bounded_and_an_incompatible_store_is_not_modified() {
             "CREATE TABLE plugin_schema(version INTEGER); INSERT INTO plugin_schema VALUES(1);",
         )
         .unwrap();
+    drop(connection);
+    let database = incompatible.join("catalog-v1.sqlite3");
+    let original = fs::read(&database).unwrap();
+    assert!(PluginRepository::observe(&incompatible).is_err());
     assert!(PluginRepository::open(&incompatible).is_err());
-    let count: usize = connection
-        .query_row(
-            "SELECT count(*) FROM sqlite_master WHERE name='revisions'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(count, 0);
+    assert_eq!(fs::read(database).unwrap(), original);
 }
 
 #[test]

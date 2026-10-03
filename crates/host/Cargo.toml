@@ -25,7 +25,6 @@ uuid.workspace = true
 fs4 = { version = "1", default-features = false, features = ["sync"] }
 
 [dev-dependencies]
-axum.workspace = true
 rusqlite.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["test-util"] }

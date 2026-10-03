@@ -95,8 +95,10 @@ the public Rust/TypeScript dependency, exact file hashes, license and source
 revision. `--javascript-only` exports the application's dependency. These
 snapshots are vendored dependencies, never a second source of maintenance.
 
-Tests are selected by concrete core behavior. Domain artifact conformance tests
-can consume explicitly provided plugin packages; their presence does not require
-all scientific workflows for a core edit. Old monorepo layout checks are retired.
+Choose tests by the user action and failure being changed; see the
+[intent-based verification guide](docs/ARCHITECTURE.md#focused-verification).
+Core tests exercise public contracts with disposable projects and protocol-only
+owners. Scientific workflows, Agent products and application composition are
+verified in their owning repositories when that integration is selected.
 See the application's [development guide](https://github.com/YuLab-SMU/Rho/blob/main/docs/DEVELOPMENT.md)
 for coordinated work.

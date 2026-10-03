@@ -258,6 +258,9 @@ async fn close_requires_owner_preparation_and_preserves_authority_and_atomic_rel
             .as_bool()
             .unwrap()
     );
+    // Only the unanswered preparation uses virtual time. Native work and the
+    // other close attempts keep their ordinary clock and acknowledgement path.
+    tokio::time::pause();
     let timed = host
         .invoke(
             &context,
@@ -265,8 +268,14 @@ async fn close_requires_owner_preparation_and_preserves_authority_and_atomic_rel
         )
         .await
         .unwrap();
+    tokio::time::resume();
     assert_eq!(timed.status, OperationStatus::Failed);
-    assert!(timed.error.unwrap().contains("deadline"));
+    assert!(
+        !query(&host, &context, "views.inspect", json!({"view":view})).await["closed"]
+            .as_bool()
+            .unwrap(),
+        "missing preparation acknowledgement must keep the view open"
+    );
     // Ending a participant during preparation refuses the close even if it
     // already acknowledged. It cannot shrink the set into apparent success.
     let ending = accepted(&host, &context, "participant-ended", &view).await;
@@ -344,8 +353,6 @@ async fn close_requires_owner_preparation_and_preserves_authority_and_atomic_rel
         );
         let record = query(&host, &context, "views.inspect", json!({"view":view})).await;
         assert_eq!(record["closed"], succeeds);
-        assert!(record.get("state").is_none());
-        assert!(record.get("state_version").is_none());
         let protected = repository
             .references(&archive.revision.id)
             .unwrap()

@@ -110,13 +110,13 @@ fn validate(scope: &str, key: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
-    fn drafts_survive_reopen_and_stale_windows_cannot_overwrite() {
+    fn independent_windows_preserve_saved_unicode_and_reject_stale_writes() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("studio.sqlite");
         let store = ApplicationStore::open(&path).unwrap();
-        assert!(!path.with_extension("agent-v1.sqlite").exists());
-        assert!(!path.with_extension("annotations-v1.sqlite").exists());
         let initial = store.read("/project", "studio").unwrap();
+        let other_window = ApplicationStore::open(&path).unwrap();
+        let stale = other_window.read("/project", "studio").unwrap();
         let first = store
             .write(
                 "/project",
@@ -126,76 +126,15 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(store.write("/project", &initial).is_err());
+        assert!(other_window.write("/project", &stale).is_err());
+        assert_eq!(
+            other_window.read("/project", "studio").unwrap().value,
+            first.value
+        );
+        drop(other_window);
         drop(store);
         let store = ApplicationStore::open(&path).unwrap();
         assert_eq!(store.read("/project", "studio").unwrap().value, first.value);
         assert!(store.read("/other", "studio").unwrap().version.is_none());
-    }
-
-    #[test]
-    fn application_state_never_opens_retired_plugin_database_paths() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("studio.sqlite");
-        // These paths cannot be opened as databases. Core state must remain
-        // usable without inspecting, repairing or removing either one.
-        let retired = ["agent-v1.sqlite", "annotations-v1.sqlite"]
-            .map(|extension| path.with_extension(extension));
-        for directory in &retired {
-            std::fs::create_dir(directory).unwrap();
-            std::fs::write(directory.join("untouched"), b"plugin-owned").unwrap();
-        }
-        let store = ApplicationStore::open(&path).unwrap();
-        let original = store.read("/project", "layout").unwrap();
-        let saved = store
-            .write(
-                "/project",
-                &ApplicationState {
-                    value: serde_json::json!({"views": ["viewer"]}),
-                    ..original
-                },
-            )
-            .unwrap();
-        drop(store);
-        let reopened = ApplicationStore::open(&path).unwrap();
-        let restored = reopened.read("/project", "layout").unwrap();
-        assert_eq!(restored.key, saved.key);
-        assert_eq!(restored.version, saved.version);
-        assert_eq!(restored.value, saved.value);
-        for directory in retired {
-            assert_eq!(
-                std::fs::read(directory.join("untouched")).unwrap(),
-                b"plugin-owned"
-            );
-            assert_eq!(std::fs::read_dir(directory).unwrap().count(), 1);
-        }
-    }
-
-    #[test]
-    fn generic_state_creates_no_fixed_window_skill_or_runtime_tables() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("studio.sqlite");
-        let store = ApplicationStore::open(&path).unwrap();
-        let original = store.read("/project", "layout").unwrap();
-        store
-            .write(
-                "/project",
-                &ApplicationState {
-                    value: serde_json::json!({"selected": "插件 Ω"}),
-                    ..original
-                },
-            )
-            .unwrap();
-        drop(store);
-        let connection = Connection::open(&path).unwrap();
-        let mut query = connection
-            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-            .unwrap();
-        let tables: Vec<String> = query
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(tables, ["application_state"]);
     }
 }

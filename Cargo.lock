@@ -1409,7 +1409,6 @@ name = "rho-host"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "axum",
  "base64 0.22.1",
  "fs4",
  "jsonschema",

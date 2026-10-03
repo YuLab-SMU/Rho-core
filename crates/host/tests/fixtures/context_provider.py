@@ -54,6 +54,8 @@ connection = frame["connection"]
 identity = frame["body"]["data"]["instance"]["identity"]
 configuration = frame["body"]["data"]["instance"]["configuration"]
 project = Path(frame["body"]["data"]["environment"]["project_root"])
+with (project / "provider-starts.log").open("ab") as started:
+    started.write(b"start\n")
 send(frame["request"], "ready", {"revision": identity["revision"], "artifact": identity["artifact"]})
 while (frame := read()) is not None:
     request, body = frame["request"], frame["body"]
