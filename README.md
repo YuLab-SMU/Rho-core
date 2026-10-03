@@ -5,6 +5,11 @@ CLI, HTTP and MCP edges. Scientific implementations live in
 [Rho-plugins](https://github.com/YuLab-SMU/Rho-plugins); the application shell and
 product assembly live in [Rho](https://github.com/YuLab-SMU/Rho).
 
+Read the [mission, boundaries and implementation plan](docs/MISSION-AND-PLAN.md)
+before selecting work. It preserves the observation-first design direction,
+engineering tradeoffs and the next owner-scoped flows; it is not an implementation
+or verification ledger.
+
 The [architecture and code navigation](docs/ARCHITECTURE.md) describes crate
 ownership, Host entry points and the shared execution lifetime.
 

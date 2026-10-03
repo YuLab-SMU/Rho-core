@@ -1,6 +1,7 @@
 # Rho core
 
-Read README.md and inspect git status before editing. This repository owns the
+Read README.md and [the mission and implementation plan](docs/MISSION-AND-PLAN.md),
+then inspect git status before selecting work or editing. This repository owns the
 generic Host, journal, protocol, SDK and public transport edges. Do not import
 scientific plugin source, application UI or R examples. Public generated SDKs
 are maintained here and exported as versioned dependency snapshots.

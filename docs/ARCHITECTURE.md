@@ -5,6 +5,10 @@ provider routing, accepted Operations and their recorded outcomes. Owner queries
 describe bounded observations. The journal records what Core accepted and settled;
 it does not establish every external action or the truth of a scientific claim.
 
+The [mission and implementation plan](MISSION-AND-PLAN.md) records the durable
+design direction and work selection criteria. This page describes current code
+and contracts; the plan's candidate mechanisms are not automatically Core APIs.
+
 ## Crate ownership
 
 | Location | Responsibility |
