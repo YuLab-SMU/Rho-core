@@ -19,6 +19,11 @@ Permission-system construction is deferred in the plan.
 
 The [architecture and code navigation](docs/ARCHITECTURE.md) describes crate
 ownership, Host entry points and the shared execution lifetime.
+Its [agent-facing entry points](docs/ARCHITECTURE.md#agent-facing-entry-points)
+explain discovery, observation, action, explicit relationships and continuation.
+Skills, loops and graphs help examine these interfaces; their selection, reasoning
+and orchestration stay with external runtimes. Context views are assembled by the
+caller for a particular question, not materialized as a Core world model.
 
 The [responsibility transfer requirements](docs/RESPONSIBILITY-TRANSFER.md) name
 the owners of development, presentation and draft capabilities leaving Core.

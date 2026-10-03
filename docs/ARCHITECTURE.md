@@ -91,6 +91,40 @@ native cancellation and deliberate reruns remain distinct owner capabilities.
 Capability metadata describes interfaces and concrete conditions, not a general
 judgment of whether a result is usable or an experiment should be repeated.
 
+## Agent-facing entry points
+
+Core serves external agent runtimes without owning their cognitive lifecycle.
+Skills, loops and graph orchestration are useful ways to examine these interfaces;
+they are not Core subsystems or a claim of integration with a particular framework.
+
+| Caller behavior | Existing entry points and source | Boundary |
+| --- | --- | --- |
+| Discover | `host.overview`, `host.catalog`, `host.describe`; [discovery](../crates/host/src/discovery.rs), [capability documentation](../crates/contract/src/discovery.rs) | Summary and detail can be read progressively. A known capability can be called directly; discovery is not skill selection or a mandatory invocation sequence. |
+| Observe | QueryGateway and QuerySnapshot; [query](../crates/operation/src/query.rs), [snapshot](../crates/contract/src/query.rs), [context references](../crates/plugin-protocol/src/context.rs) | Observations retain owner time, source, completeness and notices. Context search/preview preserve the original owner selector; they do not assemble a complete world model. |
+| Act | Operation and specific Control ports; [ports](../crates/host/src/ports.rs), [control](../crates/operation/src/control.rs) | Perform a chosen request with concrete execution conditions. Core does not select experiments or decide scientific value. |
+| Relate | Original records and explicit call-context labels; [record reads](../crates/operation/src/record.rs), [CallContext and Operation](../crates/contract/src/lib.rs) | Correlation, causation and trace labels retain declared request relationships, not verified scientific causality or a full dependency graph. |
+| Continue | Original-record reads, event cursors, cancellation and retained-report reconciliation; [port contracts](../crates/host/src/port_contracts.rs), [commit recovery](../crates/operation/src/commit_recovery.rs) | Continue observing or perform a concrete chosen control action. An Uncertain record does not trigger replay; native attachment and reruns remain separate owner actions. |
+
+These are descriptions of existing behavior, not five new API kinds. A Context
+View is the caller's scoped assembly of selected observations and records, with
+their separate times and limits. It is not a materialized Core context package.
+Core propagates limitations; scientific methods and callers assess their effect
+on a particular use or claim. No general browse/analyze/publish permission matrix
+is inferred from missing provenance.
+
+The current [recent-record arguments](../crates/contract/src/observations.rs) allow
+paging, an exact OperationId or a caller request ID. They do not expose correlation
+or causation filters. Such navigation remains a candidate in the mission plan,
+selected only after a concrete lookup gap is demonstrated. `causation_id` is a
+single declared trigger reference, not all inputs to an operation; adding DAG
+support does not justify replacing it with a dependency engine.
+
+Plans, messages, todo lists, graph state, graph checkpoints, handoff policy and
+tool selection belong to the external runtime. Core references and journal events
+must not turn that runtime state into project truth. Permission-system design
+remains deferred as specified by the mission plan; existing checks described here
+are implementation facts rather than authorization to expand that system.
+
 ## Responsibility boundary after the breaking upgrade
 
 Core no longer owns test-project orchestration, editable source branches,
