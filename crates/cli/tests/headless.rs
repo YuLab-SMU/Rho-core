@@ -129,6 +129,82 @@ fn package(path: &Path) -> PluginArchive {
 }
 
 #[test]
+fn external_tool_manages_independent_hosts_and_reads_each_original_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = package(&dir.path().join("package"));
+    let projects: Vec<_> = ["one", "two"]
+        .into_iter()
+        .map(|name| {
+            let root = dir.path().join(name);
+            let project = root.join("project");
+            fs::create_dir_all(&project).unwrap();
+            let db = root.join("operations.sqlite");
+            PluginRepository::open(&repository_path(&db))
+                .unwrap()
+                .import(&archive)
+                .unwrap();
+            (project, db)
+        })
+        .collect();
+    let (mut one, ready) = Session::open(&projects[0].1, &projects[0].0, &[DOMAIN_SCOPE]);
+    let (mut two, _) = Session::open(&projects[1].1, &projects[1].0, &[DOMAIN_SCOPE]);
+    assert!(ready["capabilities"].as_array().unwrap().iter().all(|cap| {
+        !cap["capability"]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("plugins.test_")
+    }));
+    let activate = json!({"revision":archive.revision.id,"artifact":archive.artifacts[0].id,
+        "target":backend_target(),"alias":"notes","configuration":{}});
+    let original = one.invoke("activate", "plugins.activate", activate.clone());
+    assert_eq!(original["result"]["status"], "succeeded", "{original}");
+    let id = original["result"]["operation"]["operation_id"].clone();
+    assert!(two.request("get_operation", json!({"operation_id":id}))["result"].is_null());
+    let other = two.invoke("activate", "plugins.activate", activate.clone());
+    assert_eq!(other["result"]["status"], "succeeded", "{other}");
+    assert_ne!(other["result"]["operation"]["operation_id"], id);
+
+    // A retired selector cannot create a second instance in the current Host.
+    for selector in [json!("old-child"), Value::Null] {
+        let input = one.input.as_mut().unwrap();
+        writeln!(
+            input,
+            "{}",
+            json!({"id":"legacy","test_project":selector,"request":{
+            "method":"invoke","params":{"client_request_id":"legacy","capability":{
+                "id":"plugins.activate","version":1},"arguments":activate,"preconditions":[]}}})
+        )
+        .unwrap();
+        input.flush().unwrap();
+        let reply = one.line();
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert!(
+            reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown field `test_project`")
+        );
+    }
+    assert_eq!(
+        one.query("plugins.instances", json!({"limit":20}))["result"]["data"]["total"],
+        1
+    );
+    one.close();
+    assert_eq!(
+        two.query("plugins.instances", json!({"limit":20}))["result"]["data"]["total"],
+        1
+    );
+    // The external caller ends and reopens a normal Host; no parent survives it.
+    let (mut reopened, _) = Session::open(&projects[0].1, &projects[0].0, &[DOMAIN_SCOPE]);
+    assert_eq!(
+        reopened.request("get_operation", json!({"operation_id":id}))["result"],
+        original["result"]
+    );
+    reopened.close();
+    two.close();
+}
+
+#[test]
 fn observations_keep_their_time_and_limits_after_external_changes_and_uncertain_work() {
     let dir = tempfile::tempdir().unwrap();
     let archive = package(&dir.path().join("package"));

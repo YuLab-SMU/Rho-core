@@ -5,10 +5,12 @@ CLI, HTTP and MCP edges. Scientific implementations live in
 [Rho-plugins](https://github.com/YuLab-SMU/Rho-plugins); the application shell and
 product assembly live in [Rho](https://github.com/YuLab-SMU/Rho).
 
-The pending [responsibility transfer requirements](docs/RESPONSIBILITY-TRANSFER.md)
-name the owners of development, presentation and draft capabilities leaving Core,
-and preserve original records, retained content and separate product acceptance.
-They document planned work, not implemented removals or completed migrations.
+The [responsibility transfer requirements](docs/RESPONSIBILITY-TRANSFER.md) name
+the owners of development, presentation and draft capabilities leaving Core.
+Development test-project orchestration has been removed; the other cuts remain
+planned. This breaking upgrade uses fresh projects and storage. Old projects,
+directories and history are not migration or recovery requirements. New Operations
+still retain their original requests, outcomes and uncertainty.
 
 ```sh
 cargo build --locked
@@ -28,6 +30,13 @@ scopes that Core's own capabilities need. A plugin's domain authority is granted
 explicitly by the launcher with repeatable `--grant-scope SCOPE`, for example
 `--grant-scope project.write`. Manifests, request bodies and clients of an
 existing Host (`--connect-url-file`) cannot add scopes.
+
+Core exposes one ordinary Host per endpoint. Developer tools create disposable
+project/catalog directories, launch `session` or `mcp`, address that Host directly,
+and end its process explicitly. Core has no test-project manager, child Host
+selector, dedicated test-project storage or child workspace navigation. Retired
+CLI, frame, HTTP header and view selectors fail instead of calling the current
+project. No legacy migration or test-history recovery service remains.
 
 Context search and references are windowless: an external caller addresses the
 provider and its owner-defined selector directly. `cargo test -p rho-cli --test

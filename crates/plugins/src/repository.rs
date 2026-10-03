@@ -47,7 +47,6 @@ impl PluginRepository {
         crate::archives::initialize(&connection)?;
         crate::drafts::initialize(&connection)?;
         crate::scenarios::initialize(&connection)?;
-        crate::test_projects::initialize(&connection)?;
         Ok(Self { root, connection })
     }
 
@@ -327,7 +326,6 @@ impl PluginRepository {
                     | "scenario"
                     | "document"
                     | "checkpoint"
-                    | "test_project"
                     | "archive_export"
                     | "archive_import"
             ),
@@ -376,7 +374,6 @@ impl PluginRepository {
                     | "scenario"
                     | "document"
                     | "checkpoint"
-                    | "test_project"
                     | "archive_export"
                     | "archive_import"
             ),

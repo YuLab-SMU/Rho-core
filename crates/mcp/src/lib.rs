@@ -66,12 +66,6 @@ struct Entry {
 pub struct McpRequestIdentity {
     pub project: String,
     pub identity: String,
-    pub test_project: Option<rho_contract::TestProjectId>,
-}
-struct HttpBinding {
-    identity: String,
-    test_project: Option<rho_contract::TestProjectId>,
-    host: Arc<NextHost>,
 }
 pub struct McpEdge {
     host: Arc<NextHost>,
@@ -83,7 +77,7 @@ pub struct McpEdge {
     in_flight: Semaphore,
     observations: Semaphore,
     http_project: Option<String>,
-    http_binding: OnceLock<HttpBinding>,
+    http_identity: OnceLock<String>,
 }
 struct ToolCatalog {
     identity: String,
@@ -240,11 +234,11 @@ impl McpEdge {
             in_flight: Semaphore::new(32),
             observations: Semaphore::new(16),
             http_project: None,
-            http_binding: OnceLock::new(),
+            http_identity: OnceLock::new(),
         })
     }
     fn catalog_for(&self, context: &CallContext) -> Result<Arc<ToolCatalog>, String> {
-        let descriptors = self.active_host().capabilities_for(context);
+        let descriptors = self.host.capabilities_for(context);
         let mut cache = self.catalog.lock().unwrap();
         if cache.descriptors != descriptors {
             *cache = CatalogCache::new(descriptors)?;
@@ -278,12 +272,6 @@ impl McpEdge {
         self.http_project = Some(project);
         self
     }
-    fn active_host(&self) -> &Arc<NextHost> {
-        self.http_binding
-            .get()
-            .map(|binding| &binding.host)
-            .unwrap_or(&self.host)
-    }
     fn request_context(
         &self,
         request: &RequestContext<RoleServer>,
@@ -304,28 +292,14 @@ impl McpEdge {
                 None,
             ));
         }
-        let context = self.context.clone();
-        // Selection is fixed by authenticated transport metadata, never by tool
-        // arguments. Keep the child leased until this MCP connection ends.
-        let selected = match &identity.test_project {
-            Some(id) => self
-                .host
-                .plugin_test_host(&context, id)
-                .map_err(|error| ErrorData::invalid_request(error.to_string(), None))?,
-            None => self.host.clone(),
-        };
-        let binding = self.http_binding.get_or_init(|| HttpBinding {
-            identity: identity.identity.clone(),
-            test_project: identity.test_project.clone(),
-            host: selected,
-        });
-        if binding.identity != identity.identity || binding.test_project != identity.test_project {
+        let binding = self.http_identity.get_or_init(|| identity.identity.clone());
+        if binding != &identity.identity {
             return Err(ErrorData::invalid_request(
-                "MCP connection project selection changed",
+                "MCP connection identity changed",
                 None,
             ));
         }
-        Ok(context)
+        Ok(self.context.clone())
     }
 
     fn observe_request(&self) {
@@ -382,7 +356,7 @@ impl McpEdge {
                 }
             }
         };
-        self.active_host().dispatch(context, request).await
+        self.host.dispatch(context, request).await
     }
 }
 impl ServerHandler for McpEdge {
@@ -398,7 +372,7 @@ impl ServerHandler for McpEdge {
     }
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
         if self.notifications_started.set(()).is_ok() {
-            let mut publications = self.active_host().capability_publications();
+            let mut publications = self.host.capability_publications();
             let stopped = self.notifications.clone();
             let peer = context.peer.clone();
             tokio::spawn(async move {

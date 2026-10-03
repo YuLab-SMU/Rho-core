@@ -14,7 +14,6 @@ mod package;
 mod repository;
 mod resources;
 mod runtime;
-mod test_projects;
 pub use resources::*;
 mod preview;
 #[cfg(unix)]

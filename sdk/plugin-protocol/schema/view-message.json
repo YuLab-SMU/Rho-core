@@ -22,13 +22,6 @@
       "format": "uint32",
       "minimum": 0
     },
-    "test_project": {
-      "description": "Select only an already live child for ordinary port calls. Intrinsic\nview state, close cooperation and presentation stay with this view.",
-      "type": [
-        "string",
-        "null"
-      ]
-    },
     "view": {
       "type": "string"
     }
@@ -265,24 +258,6 @@
           "required": [
             "type",
             "url"
-          ]
-        },
-        {
-          "description": "Open this containing window's counterpart in an explicitly selected\ndisposable project. The shell alone constructs its private launch URL.",
-          "type": "object",
-          "properties": {
-            "test_project": {
-              "type": "string"
-            },
-            "type": {
-              "type": "string",
-              "const": "open_test_workspace"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "type",
-            "test_project"
           ]
         },
         {

@@ -91,23 +91,6 @@ impl PluginService {
     pub fn has_live_views(&self) -> bool {
         !self.views.lock().unwrap().is_empty()
     }
-    pub(crate) fn close_live_views(&self) {
-        let records = self
-            .views
-            .lock()
-            .unwrap()
-            .values()
-            .map(|live| (live.context.clone(), live.connection.view.view.clone()))
-            .collect::<Vec<_>>();
-        for (context, id) in records {
-            let result = self.view_record(&context, &id).and_then(|record| {
-                self.close_view_at_version(&context, &id, record.state_version, false)
-            });
-            if let Err(error) = result {
-                eprintln!("plugin view shutdown: {error}");
-            }
-        }
-    }
     pub(crate) fn detach_live_views(&self) {
         // Preview fixtures are disposable. Runtime view identities and their
         // acknowledged state/layout stay retained; private transport tokens do not.
@@ -625,21 +608,12 @@ impl PluginService {
         sequence: u32,
         capability: Option<&host::CapabilityRef>,
         provider: Option<&ProviderBinding>,
-        selecting_test: bool,
     ) -> Result<host::CallContext, OperationError> {
         let mut changed = self.view_sequences.subscribe();
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 match self.try_view_context(
-                    parent,
-                    connection,
-                    token,
-                    window,
-                    view,
-                    sequence,
-                    capability,
-                    provider,
-                    selecting_test,
+                    parent, connection, token, window, view, sequence, capability, provider,
                 ) {
                     Ok(None) => {
                         changed.changed().await.map_err(invalid)?;
@@ -667,7 +641,6 @@ impl PluginService {
         sequence: u32,
         capability: Option<&host::CapabilityRef>,
         provider: Option<&ProviderBinding>,
-        selecting_test: bool,
     ) -> Result<Option<host::CallContext>, OperationError> {
         let mut views = self.views.lock().unwrap();
         let live = views
@@ -695,25 +668,6 @@ impl PluginService {
             observation.instance.identity == live.connection.view.instance
                 && observation.instance.state == InstanceState::Active
         });
-        if selecting_test {
-            // Target selection needs its own frozen declaration. Do not merge
-            // these management scopes into the actual capability's grant.
-            let declared = live.connection.grants.iter().find(|grant| {
-                grant.capability.id.as_str() == "plugins.test_project"
-                    && grant.capability.version == 1
-            });
-            if !active
-                || live.connection.view.purpose == PluginInstancePurpose::FixturePreview
-                || ![PLUGINS_READ_SCOPE, PLUGINS_RUN_SCOPE].iter().all(|scope| {
-                    parent.scopes.contains(*scope)
-                        && declared.is_some_and(|grant| grant.scopes.contains(*scope))
-                })
-            {
-                return Err(invalid(
-                    "test project selection requires an active view's declared plugins.test_project grant with plugins.read and plugins.run",
-                ));
-            }
-        }
         let mut scope = host::ViewCallScope {
             window: live.connection.view.window.clone(),
             origin: Some(PluginViewOrigin {
@@ -774,15 +728,14 @@ impl PluginService {
                 // A combined plugin's view and its exact backend share the
                 // activation grants. Keep that authority for backend-owned
                 // composition; each reverse call still checks its own grant.
-                // Foreign providers and disposable projects get only this
+                // Foreign providers get only this
                 // capability's scopes, never the view's other grants.
-                let own_backend = !selecting_test
-                    && provider.is_some_and(|binding| {
-                        binding.project == live.connection.view.project
-                            && binding.provider == live.connection.view.instance
-                            && binding.capability == grant.capability
-                            && self.runtime.owns_active_capability(binding)
-                    });
+                let own_backend = provider.is_some_and(|binding| {
+                    binding.project == live.connection.view.project
+                        && binding.provider == live.connection.view.instance
+                        && binding.capability == grant.capability
+                        && self.runtime.owns_active_capability(binding)
+                });
                 if !own_backend {
                     context.scopes = grant.scopes.clone();
                 }

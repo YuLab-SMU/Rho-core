@@ -21,7 +21,6 @@ pub(super) struct ConnectedHost {
     origin: Url,
     token: String,
     project: String,
-    test_project: Option<rho_plugin_protocol::TestProjectId>,
 }
 struct Endpoint {
     origin: Url,
@@ -112,7 +111,6 @@ impl ConnectedHost {
     pub(super) async fn open(
         path: &Path,
         expected_project: Option<&Path>,
-        test_project: Option<rho_plugin_protocol::TestProjectId>,
     ) -> Result<Self, CliFailure> {
         let endpoint = Endpoint::read(path)?;
         let mut headers = HeaderMap::new();
@@ -182,7 +180,6 @@ impl ConnectedHost {
             origin: endpoint.origin,
             token: endpoint.token,
             project,
-            test_project,
         })
     }
     pub(super) async fn submit(&self, request: Value) -> Result<Value, CliFailure> {
@@ -202,10 +199,7 @@ impl ConnectedHost {
                 .map_err(|_| invalid("System clock is before Unix epoch"))?
                 .as_nanos()
         );
-        let mut frame = json!({"project_root":self.project,"frame":{"id":id,"request":request}});
-        if let Some(id) = &self.test_project {
-            frame["frame"]["test_project"] = json!(id);
-        }
+        let frame = json!({"project_root":self.project,"frame":{"id":id,"request":request}});
         let bytes =
             serde_json::to_vec(&frame).map_err(|_| invalid("Host request cannot be encoded"))?;
         if bytes.len() > REQUEST_BYTES {

@@ -208,11 +208,6 @@ pub enum PluginViewRequest {
     OpenExternalUrl {
         url: String,
     },
-    /// Open this containing window's counterpart in an explicitly selected
-    /// disposable project. The shell alone constructs its private launch URL.
-    OpenTestWorkspace {
-        test_project: TestProjectId,
-    },
     /// Admit an explicit original-resource download. This is not evidence that
     /// the containing browser requested or completed a file download.
     DownloadResource {
@@ -261,7 +256,6 @@ impl std::fmt::Debug for PluginViewRequest {
             Self::FinishTextCopy { .. } => "FinishTextCopy",
             Self::CancelTextCopy { .. } => "CancelTextCopy",
             Self::OpenExternalUrl { .. } => "OpenExternalUrl",
-            Self::OpenTestWorkspace { .. } => "OpenTestWorkspace",
             Self::DownloadResource { .. } => "DownloadResource",
             Self::DownloadArchive { .. } => "DownloadArchive",
             Self::Control { .. } => "Control",
@@ -283,10 +277,5 @@ pub struct PluginViewMessage {
     pub view: ViewInstanceId,
     pub sequence: u32,
     pub request: RequestId,
-    /// Select only an already live child for ordinary port calls. Intrinsic
-    /// view state, close cooperation and presentation stay with this view.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub test_project: Option<TestProjectId>,
     pub body: PluginViewRequest,
 }

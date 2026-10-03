@@ -1,5 +1,4 @@
 use crate::{InvokeRequest, OperationId, QueryRequest};
-pub use rho_plugin_protocol::TestProjectId;
 use serde::{Deserialize, Serialize};
 
 /// Ephemeral owner control. Arguments may contain secrets and never become an
@@ -53,11 +52,6 @@ pub enum HostRequest {
 #[derive(ts_rs::TS)]
 pub struct SessionFrame {
     pub id: String,
-    /// Select an existing test Host owned by the parent project. Omission selects
-    /// the parent; an unavailable explicit selection never falls back to it.
-    #[serde(default)]
-    #[ts(optional)]
-    pub test_project: Option<TestProjectId>,
     pub request: HostRequest,
 }
 

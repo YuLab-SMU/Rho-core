@@ -46,6 +46,22 @@ fn scenario_request(name: &str) -> SaveScenario {
 }
 
 #[test]
+fn fresh_catalog_has_no_development_test_project_storage() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = PluginRepository::open(temp.path()).unwrap();
+    let connection = rusqlite::Connection::open(repo.root().join("catalog-v1.sqlite3")).unwrap();
+    let tables: u32 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name = 'plugin_test_projects'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tables, 0);
+    assert!(!repo.root().join("test-projects-v1").exists());
+}
+
+#[test]
 fn scenario_history_cas_restore_and_scoped_pages_are_durable() {
     let temp = tempfile::tempdir().unwrap();
     let mut repo = PluginRepository::open(temp.path()).unwrap();

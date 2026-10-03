@@ -1,5 +1,5 @@
-use rho_contract::{HostRequest, MAX_ARGUMENT_BYTES, SessionFrame, SessionReply};
 use rho_contract::CallContext;
+use rho_contract::{HostRequest, MAX_ARGUMENT_BYTES, SessionFrame, SessionReply};
 use rho_host::{LocalGrants, NextHost};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
@@ -138,10 +138,7 @@ async fn read_frame(
 }
 
 async fn dispatch(host: Arc<NextHost>, context: &CallContext, frame: SessionFrame) -> SessionReply {
-    match host
-        .dispatch_selected(context, frame.test_project.as_ref(), frame.request)
-        .await
-    {
+    match host.dispatch(context, frame.request).await {
         Ok(result) => SessionReply {
             id: Some(frame.id),
             ok: true,

@@ -109,23 +109,11 @@ Preview creates no backend process or provider registration. It does not emulate
 successful scientific Operations. Use explicit disposable-project testing for a
 real backend.
 
-`client.testProject(id)` selects one existing disposable child for `query`,
-`control`, `invoke`, `operation` and `cancel`. It requires container feature
-`test_projects_v1` and an active runtime view declaring `plugins.test_project@1`
-with `plugins.read` and `plugins.run`. Actual capability calls still require their
-own declared grants, intersected with the parent authority. The selector never
-adds its management scopes to those grants. Fixture previews cannot select children.
-Missing or stopped targets refuse calls rather than falling back to analysis.
-
-The selection is immutable on each facade. Invocation request IDs and view identity
-are preserved in the child's original journal. Intrinsic state, close cooperation,
-copy and resource presentation stay bound to the original view; they cannot select
-a child. Selected draft writes are fenced while that original view is closing.
-`client.openTestWorkspace(id)` requests a new same-Host workspace from a focused
-explicit gesture. The shell validates the live child and constructs the private
-URL; the SDK sees only a navigation-request acknowledgement, not credentials or
-proof that the destination loaded. Child creation and view opening remain separate
-ordinary native operations. The facade exposes no lifecycle automation.
+Developer tools own disposable-project testing outside the UI client. They create
+fresh project/catalog directories and launch an ordinary Host through its public
+CLI or MCP endpoint. A view client addresses only its containing Host; it cannot
+select a child Host or request a child workspace. Each tool owns process lifetime
+and cleanup, while the Host retains ordinary authorization and Operation semantics.
 
 The container creates one opaque-origin iframe and transfers one private
 MessagePort to that exact document. The SDK checks the parent, document nonce,
@@ -211,7 +199,7 @@ then rechecks original authority before requesting the browser download. Archive
 and resources share the same per-view active-download slot. Archive collection
 stops after nine minutes; the SDK allows ten minutes for its response, while other
 requests retain their existing timeout. A late read cannot initiate a timed-out
-transfer. Intrinsic downloads cannot select a disposable child project.
+transfer.
 
 The acknowledgement means the browser download was requested; it does not claim
 that a file was saved. Browser settings, cancellation and disk failures remain
@@ -284,10 +272,16 @@ backend instance and already-accepted scientific work intact. Host restart does
 not reconnect a stored view. Open a fresh view with the retained state and exact
 revision, and explicitly close obsolete records. There is no state migration.
 
-Run `node scripts/test-plugin-ui.mjs` from a checkout to verify external strict
-NodeNext compilation and the public channel. The browser conformance fixture is
-built entirely outside the checkout from the public SDK, then snapshotted and
-activated through the ordinary package and Host lifecycle paths.
+Type-check the public SDK in Rho-core without an application checkout:
+
+```sh
+npm exec --yes --package=typescript@5.9.3 -- tsc --noEmit --strict --target ES2022 \
+  --lib DOM,DOM.Iterable,ES2022 --module ES2022 --moduleResolution Bundler \
+  sdk/plugin-ui/*.ts sdk/host-client/*.ts
+```
+
+This checks the SDK's public types. Real browser channel and product behavior
+are verified by the selected UI consumer in its own repository.
 
 `readResource(client, reference, {maxBytes, signal})` reads through the declared
 `resources.read@1` capability. It validates each returned reference, offset and
@@ -394,11 +388,7 @@ replay, route or claim success for Operations. The adapter remains responsible f
 recovery before accepting another write. Do not use render/update callbacks to
 start scientific work.
 
-For a minimal ordinary package, `scripts/fixtures/visual-plugin.mjs` builds an
-independent example from this public SDK. Its recipe validates `views/report.json`
-and emits that exact declaration into the built view. The example uses public
-catalog queries and intrinsic view-state actions only. `visual-studio.spec.ts`
-checks declaration edit → checkpoint → build → fixture preview → applied view;
-`visual-runtime.spec.ts` checks component behavior and lifecycle with controlled
-read/action peers. These checks do not establish every provider's subscription or
-scientific Operation recovery behavior. The Studio editing canvas remains inert.
+A UI consumer owns real browser verification of its declaration editor and
+renderer, using explicitly selected public SDK contracts and package artifacts.
+Core type checks and protocol fixtures do not establish that consumer's editing,
+rendering, provider subscription or scientific recovery behavior.

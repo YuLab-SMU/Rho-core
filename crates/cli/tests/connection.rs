@@ -361,36 +361,9 @@ fn malformed_or_nonloopback_urls_fail_without_echoing_the_private_input() {
 }
 
 #[test]
-fn connected_test_selection_keeps_parent_guard_and_never_opens_a_local_host() {
-    let server = spawn_server(2, |index, request, stream| {
-        if index == 0 {
-            respond(
-                stream,
-                200,
-                json!({"project_root":"/fixture-project","runtime":"plugins","capabilities":[]}),
-                "",
-            );
-        } else {
-            assert_eq!(request.body["project_root"], "/fixture-project");
-            assert_eq!(request.body["frame"]["test_project"], "test-one");
-            respond(
-                stream,
-                200,
-                json!({"id":request.body["frame"]["id"],"ok":true,"result":{"selected":"test-one"}}),
-                "",
-            );
-        }
-    });
+fn retired_child_selection_is_rejected_without_connecting_or_creating_a_host() {
     let dir = tempfile::tempdir().unwrap();
-    let file = url_file(dir.path(), server.port);
-    fs::write(
-        &file,
-        format!(
-            "http://127.0.0.1:{}/?plugin-window#token={TOKEN}\n",
-            server.port
-        ),
-    )
-    .unwrap();
+    let file = url_file(dir.path(), 1);
     let database = dir.path().join("never-created/state.sqlite");
     let result = command(
         &file,
@@ -401,40 +374,12 @@ fn connected_test_selection_keeps_parent_guard_and_never_opens_a_local_host() {
             "query",
             "--capability",
             "plugins.instances",
-            "--arguments",
-            "{\"limit\":100}",
         ],
     );
+    assert!(!result.status.success());
     assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
+        String::from_utf8_lossy(&result.stderr).contains("unexpected argument '--test-project'")
     );
     ensure_no_token(&result);
-    server.task.join().unwrap();
     assert!(!database.parent().unwrap().exists());
-    let result = command(
-        &file,
-        &database,
-        &[
-            "--test-project",
-            "../invalid",
-            "query",
-            "--capability",
-            "plugins.instances",
-        ],
-    );
-    assert!(!result.status.success());
-    ensure_no_token(&result);
-    let result = Command::new(env!("CARGO_BIN_EXE_rho"))
-        .args([
-            "--test-project",
-            "test-one",
-            "query",
-            "--capability",
-            "plugins.instances",
-        ])
-        .output()
-        .unwrap();
-    assert!(!result.status.success());
 }

@@ -17,9 +17,6 @@ struct Cli {
     /// Connect to an existing Workbench using its private launch URL file; no local Host is opened.
     #[arg(long)]
     connect_url_file: Option<PathBuf>,
-    /// Select an existing disposable test project on the connected Host.
-    #[arg(long, requires = "connect_url_file")]
-    test_project: Option<String>,
     /// Explicitly select the generic plugin Host (also the default).
     #[arg(long, conflicts_with = "connect_url_file")]
     plugins_only: bool,
@@ -28,7 +25,11 @@ struct Cli {
     /// Grant an additional scope to this local launcher's callers (repeatable).
     /// Generic Core scopes are always present; domain scopes such as a plugin's
     /// own authority are granted only here, never by manifests or requests.
-    #[arg(long = "grant-scope", value_name = "SCOPE", conflicts_with = "connect_url_file")]
+    #[arg(
+        long = "grant-scope",
+        value_name = "SCOPE",
+        conflicts_with = "connect_url_file"
+    )]
     grant_scope: Vec<String>,
     #[command(subcommand)]
     command: Command,
@@ -177,14 +178,7 @@ async fn run() -> Result<(), CliFailure> {
             Command::Request {json}=>(serde_json::from_str::<serde_json::Value>(json).map_err(|e|e.to_string())?,"result"),
             _=>return Err(rho_host::OperationError::InvalidInput("--connect-url-file supports query, invoke, get-operation and request; it never launches a server or runtime".into()).into()),
         };
-        let test_project = cli
-            .test_project
-            .as_deref()
-            .map(rho_plugin_protocol::TestProjectId::new)
-            .transpose()
-            .map_err(|error| rho_host::OperationError::InvalidInput(error.to_string()))?;
-        let host =
-            connection::ConnectedHost::open(path, cli.project.as_deref(), test_project).await?;
+        let host = connection::ConnectedHost::open(path, cli.project.as_deref()).await?;
         let result = host.submit(request).await?;
         let mut response = json!({"ok":true,"mode":"connected_host"});
         response[label] = result;

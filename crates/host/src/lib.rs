@@ -4,7 +4,6 @@ mod discovery;
 mod observer;
 mod ownership;
 mod paths;
-mod plugin_tests;
 mod plugin_views;
 mod port_contracts;
 pub use config::{HostProfile, ReservedHost};
@@ -69,7 +68,9 @@ impl LocalGrants {
         // generic defaults, so a launcher cannot exceed the shared bound.
         NextHost::local_context_with(&grants)
             .validate()
-            .map_err(|error| OperationError::InvalidInput(format!("invalid --grant-scope: {error}")))?;
+            .map_err(|error| {
+                OperationError::InvalidInput(format!("invalid --grant-scope: {error}"))
+            })?;
         Ok(grants)
     }
     pub fn scopes(&self) -> &std::collections::BTreeSet<String> {
@@ -84,13 +85,11 @@ struct HostRuntime {
     gateway: Arc<OperationGateway>,
     queries: Arc<QueryGateway>,
     plugins: Option<Arc<rho_plugins::PluginService>>,
-    test_projects: Option<Arc<plugin_tests::TestProjects>>,
     _project_lease: Option<Arc<ProjectLease>>,
 }
 
 #[derive(Default)]
 struct HostDomains {
-    disable_test_projects: bool,
     plugin_store: Option<PathBuf>,
     protected_paths: Vec<PathBuf>,
     project_lease: Option<ProjectLease>,
@@ -112,21 +111,6 @@ impl NextHost {
         database: &Path,
         lease: ProjectLease,
     ) -> Result<Self, OperationError> {
-        Self::open_generic_reserved(database, lease, false).await
-    }
-
-    async fn open_plugin_test_workspace(
-        database: &Path,
-        root: &Path,
-    ) -> Result<Self, OperationError> {
-        Self::open_generic_reserved(database, ProjectLease::acquire(root)?, true).await
-    }
-
-    async fn open_generic_reserved(
-        database: &Path,
-        lease: ProjectLease,
-        disable_test_projects: bool,
-    ) -> Result<Self, OperationError> {
         let journal = Arc::new(SqliteOperationJournal::open(database)?);
         let mut protected = paths::protected_path_candidates(database);
         protected.push(lease.path().to_owned());
@@ -134,7 +118,6 @@ impl NextHost {
             journal,
             HostDomains {
                 plugin_store: Some(rho_plugins::repository_path(database)),
-                disable_test_projects,
                 protected_paths: protected,
                 project_lease: Some(lease),
             },
@@ -215,7 +198,10 @@ impl NextHost {
                 kind: CallerKind::Human,
                 id: "local-user".into(),
             },
-            scopes: CORE_LOCAL_SCOPES.iter().map(|scope| (*scope).into()).collect(),
+            scopes: CORE_LOCAL_SCOPES
+                .iter()
+                .map(|scope| (*scope).into())
+                .collect(),
             connection_id: format!("cli:{}", std::process::id()),
             correlation_id: None,
             causation_id: None,
@@ -251,7 +237,6 @@ impl NextHost {
                 queries: Arc::new(QueryGateway::new(registry.clone())),
                 registry,
                 plugins: None,
-                test_projects: None,
                 _project_lease: None,
             }),
             recovered_on_open: Vec::new(),
@@ -265,7 +250,6 @@ impl NextHost {
         id_generator: Arc<dyn OperationIdGenerator>,
     ) -> Result<Self, OperationError> {
         let HostDomains {
-            disable_test_projects,
             plugin_store,
             protected_paths,
             project_lease,
@@ -295,18 +279,6 @@ impl NextHost {
                 discovery.clone(),
                 id,
             )))?;
-        }
-        let test_projects = if disable_test_projects {
-            None
-        } else {
-            plugin_store
-                .as_ref()
-                .zip(project.clone())
-                .map(|(store, project)| plugin_tests::TestProjects::open(store, project))
-                .transpose()?
-        };
-        if let Some(owner) = &test_projects {
-            owner.register(&mut registry)?;
         }
         let plugins = plugin_store
             .zip(project.clone())
@@ -341,7 +313,6 @@ impl NextHost {
             queries: Arc::new(QueryGateway::new(registry.clone())),
             registry,
             plugins,
-            test_projects,
             _project_lease: project_lease,
         });
         if let Some(plugins) = &runtime.plugins {
@@ -352,40 +323,6 @@ impl NextHost {
             recovered_on_open,
             tasks,
         })
-    }
-
-    /// Select an already running disposable Host. Holding this handle prevents
-    /// its stop operation from racing requests through the ordinary Host ports.
-    pub fn plugin_test_host(
-        &self,
-        context: &CallContext,
-        id: &rho_plugin_protocol::TestProjectId,
-    ) -> Result<Arc<NextHost>, OperationError> {
-        self.runtime
-            .test_projects
-            .as_ref()
-            .ok_or_else(|| {
-                OperationError::Unavailable("Test project hosting is unavailable".into())
-            })?
-            .host(context, id)
-    }
-
-    /// Transport selection preserves the same caller and the selected Host's
-    /// ordinary ports. Holding the child handle fences native stop through the call.
-    pub async fn dispatch_selected(
-        &self,
-        context: &CallContext,
-        test_project: Option<&rho_plugin_protocol::TestProjectId>,
-        request: rho_contract::HostRequest,
-    ) -> Result<serde_json::Value, OperationError> {
-        match test_project {
-            Some(id) => {
-                self.plugin_test_host(context, id)?
-                    .dispatch(context, request)
-                    .await
-            }
-            None => self.dispatch(context, request).await,
-        }
     }
 
     pub fn capability_publications(&self) -> tokio::sync::watch::Receiver<u64> {
@@ -509,11 +446,6 @@ impl NextHost {
                 .gateway
                 .commit_recovery()
                 .has_retained_results()
-            && self
-                .runtime
-                .test_projects
-                .as_ref()
-                .is_none_or(|owner| owner.is_idle())
     }
 
     /// The caller must first stop accepting new work through every edge.
@@ -529,26 +461,10 @@ impl NextHost {
 
     /// The caller must first stop accepting new work through every edge.
     pub async fn drain(&self) {
-        self.drain_plugins(true).await;
-    }
-
-    /// Disposable child-project teardown permanently releases its instances.
-    pub(crate) async fn drain_discarding_plugins(&self) {
-        self.drain_plugins(false).await;
-    }
-
-    async fn drain_plugins(&self, retain_plugins: bool) {
         self.tasks.close();
         self.tasks.wait().await;
-        if let Some(owner) = &self.runtime.test_projects {
-            Box::pin(owner.drain()).await;
-        }
         if let Some(plugins) = &self.runtime.plugins {
-            if retain_plugins {
-                plugins.suspend_for_restart().await;
-            } else {
-                plugins.drain().await;
-            }
+            plugins.suspend_for_restart().await;
         }
     }
 

@@ -193,7 +193,6 @@ impl PluginService {
         &self,
         view: &ViewInstanceId,
         request: &PluginViewRequest,
-        selecting_test: bool,
     ) -> Result<(), OperationError> {
         let views = self.views.lock().unwrap();
         let live = views
@@ -201,9 +200,7 @@ impl PluginService {
             .ok_or_else(|| OperationError::NotFound("view connection".into()))?;
         if let Some(close) = &live.closing {
             match request {
-                request
-                    if !selecting_test && crate::draft_service::view_persistence_write(request) =>
-                {
+                request if crate::draft_service::view_persistence_write(request) => {
                     if close.sealed(live.renderers.len()) {
                         return Err(OperationError::ContentChanged(
                             "view drafts are sealed for closure".into(),
@@ -215,7 +212,6 @@ impl PluginService {
                 | PluginViewRequest::Cancel { .. }
                 | PluginViewRequest::BeginTextCopy
                 | PluginViewRequest::OpenExternalUrl { .. }
-                | PluginViewRequest::OpenTestWorkspace { .. }
                 | PluginViewRequest::DownloadResource { .. }
                 | PluginViewRequest::DownloadArchive { .. }
                 | PluginViewRequest::FinishTextCopy { .. } => {

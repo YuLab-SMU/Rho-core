@@ -110,8 +110,7 @@ fn failure(status: StatusCode, error: impl Into<String>) -> Response {
 async fn boundary(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
     let deleting = request.method() == axum::http::Method::DELETE;
     let plugin_asset = request.method() == axum::http::Method::GET
-        && (request.uri().path().starts_with("/view/plugin/")
-            || request.uri().path().starts_with("/view/plugin-test/"));
+        && request.uri().path().starts_with("/view/plugin/");
     let headers = request.headers();
     if headers.get(header::HOST).and_then(|h| h.to_str().ok()) != Some(&state.authority) {
         return failure(StatusCode::FORBIDDEN, "unexpected local Host");
@@ -133,6 +132,12 @@ async fn boundary(State(state): State<AppState>, mut request: Request, next: Nex
     if !public_asset && credential != Some(state.authorization.as_str()) {
         return failure(StatusCode::UNAUTHORIZED, "local bearer token required");
     }
+    if request.headers().contains_key("x-rho-test-project") {
+        return failure(
+            StatusCode::BAD_REQUEST,
+            "Child Host selection is unsupported; connect to the target Host directly",
+        );
+    }
     let mut session_access = None;
     if mcp_request {
         let hosting = state.hosting.read().await;
@@ -140,36 +145,9 @@ async fn boundary(State(state): State<AppState>, mut request: Request, next: Nex
             return failure(StatusCode::CONFLICT, "Select a project first");
         };
         let project = selected.root.to_string_lossy().into_owned();
-        if request
-            .headers()
-            .get_all("x-rho-test-project")
-            .iter()
-            .count()
-            > 1
-        {
-            return failure(StatusCode::BAD_REQUEST, "Duplicate test project selection");
-        }
-        let test_project = match request.headers().get("x-rho-test-project") {
-            None => None,
-            Some(value) => match value
-                .to_str()
-                .ok()
-                .and_then(|id| rho_contract::TestProjectId::new(id).ok())
-            {
-                Some(id) => Some(id),
-                None => return failure(StatusCode::BAD_REQUEST, "Invalid test project selection"),
-            },
-        };
-        if let Some(id) = &test_project {
-            let context = state.local_context();
-            if let Err(error) = selected.host.plugin_test_host(&context, id) {
-                return failure(StatusCode::CONFLICT, error.to_string());
-            }
-        }
         let identity = rho_mcp::McpRequestIdentity {
             project,
             identity: "manual-mcp".into(),
-            test_project,
         };
         if request.headers().get_all("mcp-session-id").iter().count() > 1 {
             return failure(StatusCode::BAD_REQUEST, "Duplicate MCP session identity");
@@ -379,11 +357,7 @@ async fn dispatch(
     }
     let result = selected
         .host
-        .dispatch_selected(
-            &context,
-            request.frame.test_project.as_ref(),
-            request.frame.request,
-        )
+        .dispatch(&context, request.frame.request)
         .await;
     let reply = match result {
         Ok(result) => SessionReply {
@@ -529,10 +503,6 @@ fn router(state: AppState, shutdown: CancellationToken) -> Router {
         .route(
             "/view/plugin/{connection}/{token}/{*path}",
             get(plugin_views::asset),
-        )
-        .route(
-            "/view/plugin-test/{test_project}/{connection}/{token}/{*path}",
-            get(plugin_views::test_asset),
         )
         .route("/api/plugin-view", post(plugin_views::dispatch))
         .route("/api/project", post(select_project))
@@ -722,6 +692,85 @@ mod tests {
     }
     async fn frame(state: &AppState, method: &str, params: Value) -> Value {
         json!({"project_root":state.hosting.read().await.info().project_root, "frame":{"id":"request","request":{"method":method,"params":params}}})
+    }
+
+    #[tokio::test]
+    async fn retired_child_selectors_never_dispatch_to_the_current_project() {
+        let (_temp, state, app) = fixture().await;
+        let query = frame(&state, "subscribe", json!({"after_sequence":0,"limit":100})).await;
+        let mut selected = query.clone();
+        selected["frame"]["test_project"] = json!("old-child");
+        let rejected = request(&app, "/api/host", Some(selected)).await;
+        assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        for method in ["POST", "GET", "DELETE"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri("/mcp")
+                        .header(header::HOST, "127.0.0.1:10001")
+                        .header(header::AUTHORIZATION, "Bearer fixture-only")
+                        .header("x-rho-test-project", "old-child")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{method}");
+        }
+        let mut view = json!({"call_token":"unused","project_root":state.hosting.read().await.info().project_root,
+            "message":{"protocol_version":1,"connection":"connection-one","view":"view-one",
+                "sequence":1,"request":"request-one","body":{"type":"query",
+                    "capability":{"id":"plugins.instances","version":1},"arguments":{"limit":20}}}});
+        view["test_project"] = json!("old-child");
+        let rejected = request(&app, "/api/plugin-view", Some(view.clone())).await;
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            json_body(rejected).await["error"]
+                .as_str()
+                .unwrap()
+                .contains("Unknown view request field")
+        );
+        view.as_object_mut().unwrap().remove("test_project");
+        view["message"]["test_project"] = json!("old-child");
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/plugin-view")
+                    .header(header::HOST, "127.0.0.1:10001")
+                    .header(header::AUTHORIZATION, "Bearer fixture-only")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-rho-studio-window", "window-one")
+                    .body(Body::from(view.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            json_body(response).await["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown field `test_project`")
+        );
+        assert_eq!(
+            request(
+                &app,
+                "/view/plugin-test/old-child/connection/token/index.html",
+                None
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            json_body(request(&app, "/api/host", Some(query)).await).await["result"],
+            json!([])
+        );
     }
 
     #[tokio::test]
@@ -1139,6 +1188,3 @@ mod tests {
         }
     }
 }
-
-#[cfg(test)]
-mod plugin_test_project_tests;

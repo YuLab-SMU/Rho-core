@@ -108,13 +108,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     BuildPlugin::export_all(&types)?;
     PreviewPlugin::export_all(&types)?;
     PluginBuildResult::export_all(&types)?;
-    CreatePluginTestProject::export_all(&types)?;
-    PluginTestProjectObservation::export_all(&types)?;
-    PluginTestProjectArguments::export_all(&types)?;
-    StopPluginTestProject::export_all(&types)?;
-    PluginTestOperationArguments::export_all(&types)?;
-    ListPluginTestProjects::export_all(&types)?;
-    PluginTestProjectPage::export_all(&types)?;
     VisualDocument::export_all(&types)?;
     fs::create_dir_all(root.join("schema"))?;
     for (name, schema) in [
@@ -147,34 +140,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (
             "plugin-build-result",
             schemars::schema_for!(PluginBuildResult),
-        ),
-        (
-            "create-plugin-test-project",
-            schemars::schema_for!(CreatePluginTestProject),
-        ),
-        (
-            "plugin-test-project-observation",
-            schemars::schema_for!(PluginTestProjectObservation),
-        ),
-        (
-            "plugin-test-project-arguments",
-            schemars::schema_for!(PluginTestProjectArguments),
-        ),
-        (
-            "plugin-test-operation-arguments",
-            schemars::schema_for!(PluginTestOperationArguments),
-        ),
-        (
-            "stop-plugin-test-project",
-            schemars::schema_for!(StopPluginTestProject),
-        ),
-        (
-            "list-plugin-test-projects",
-            schemars::schema_for!(ListPluginTestProjects),
-        ),
-        (
-            "plugin-test-project-page",
-            schemars::schema_for!(PluginTestProjectPage),
         ),
         ("checkpoint-plugin", schemars::schema_for!(CheckpointPlugin)),
         ("plugin-checkpoint", schemars::schema_for!(PluginCheckpoint)),

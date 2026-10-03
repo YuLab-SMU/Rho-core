@@ -29,9 +29,7 @@ impl HttpMcpSessions {
         if let Some(id) = &session
             && (id.len() > 256
                 || !entries.get(id).is_some_and(|entry| {
-                    entry.project == identity.project
-                        && entry.identity == identity.identity
-                        && entry.test_project == identity.test_project
+                    entry.project == identity.project && entry.identity == identity.identity
                 }))
         {
             return Err("MCP session is unavailable to this connection");
@@ -80,7 +78,6 @@ impl SessionAccess {
                     || entries.get(id).is_some_and(|old| {
                         old.identity != self.identity.identity
                             || old.project != self.identity.project
-                            || old.test_project != self.identity.test_project
                     })
                 {
                     return Err("MCP session identity conflict");
