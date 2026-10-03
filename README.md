@@ -10,6 +10,13 @@ before selecting work. It preserves the observation-first design direction,
 engineering tradeoffs and the next owner-scoped flows; it is not an implementation
 or verification ledger.
 
+Rho supports researchers and external agents who gather material, act and revise
+their understanding in a changing environment. Core supplies request routing,
+execution coordination and retained reports; owners describe bounded observations.
+Context is acquired for the question at hand. Ordinary work does not wait for a
+complete environment model, provenance graph or scientific validity judgment.
+Permission-system construction is deferred in the plan.
+
 The [architecture and code navigation](docs/ARCHITECTURE.md) describes crate
 ownership, Host entry points and the shared execution lifetime.
 
@@ -86,6 +93,13 @@ Matching current state does not prove that the old Operation caused it. External
 changes do not create invented Operations, and independent work is not globally
 blocked. `operation.reconcile_commit` commits a retained validated result; it does
 not reconstruct unknown external history or establish a scientific conclusion.
+
+Request retry protection uses an explicit caller request ID and matching request,
+not code similarity or inferred scientific intent. A deliberate new run uses a new
+request ID and may produce a different result. This does not require deterministic
+computation or promise exactly-once effects in an external system. Reconnecting to
+a native job, reading its logs, committing a retained report and rerunning code are
+separate actions; only the retained-report commit belongs to Core reconciliation.
 
 The headless test above also exercises actual external file changes, cached and
 partial reads, unknown times, and fresh reads after an uncertain Operation. It

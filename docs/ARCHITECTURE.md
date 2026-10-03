@@ -14,7 +14,7 @@ and contracts; the plan's candidate mechanisms are not automatically Core APIs.
 | Location | Responsibility |
 | --- | --- |
 | [contract](../crates/contract/src/lib.rs) | Public Host requests, Operations, observations and discovery schemas. |
-| [operation](../crates/operation/src/lib.rs) | Registry, admission, idempotency, execution, cancellation and retained-result commit reconciliation. |
+| [operation](../crates/operation/src/lib.rs) | Registry, admission, explicit request retry protection, execution, cancellation and retained-result commit reconciliation. |
 | [adapters/sqlite](../crates/adapters/sqlite/src/lib.rs) | Journal persistence and scoped record reads. Application settings have a separate store in this adapter. |
 | [host](../crates/host/src/lib.rs) | Project ownership, launcher authority, composition and shared public calls. |
 | [plugins](../crates/plugins/src/lib.rs) | Package containment, provider registration, native instances, resources and restricted views. |
@@ -69,6 +69,27 @@ Before draining, callers stop admitting requests through every transport.
 `operation.reconcile_commit` uses the retained validated result of the original
 Operation. It neither replays the native action nor reconstructs external history.
 Later owner observations can improve understanding without rewriting that record.
+
+## Interpretation and explicit request identity
+
+Core checks transport and recorded capability contracts. A schema-valid reply does
+not prove a scientific claim; a contract fault retains the original owner material
+without establishing that the underlying computation is scientifically invalid.
+Owner observations can have unknown times, incomplete data or conflicting reports.
+Callers acquire more context for their current question rather than waiting for a
+complete envelope or a stable world model.
+
+The current retry lookup uses the caller's explicit `client_request_id` and
+matching request in the relevant journal scope. `operation_id` identifies the
+accepted record. Core does not infer intent from similar code or nearby times;
+a new request ID expresses a new submission. This is duplicate-delivery protection,
+not a requirement for idempotent scientific computation or an exactly-once guarantee
+for external effects. The original native outcome may still be unknown.
+
+Core reconciliation commits a retained report. Native job attachment, log reads,
+native cancellation and deliberate reruns remain distinct owner capabilities.
+Capability metadata describes interfaces and concrete conditions, not a general
+judgment of whether a result is usable or an experiment should be repeated.
 
 ## Responsibility boundary after the breaking upgrade
 
