@@ -44,10 +44,6 @@ pub enum InstanceState {
 #[serde(deny_unknown_fields)]
 pub struct PluginInstance {
     pub identity: InstanceRef,
-    /// Omitted for normal runtime instances, preserving native initialization.
-    #[serde(default, skip_serializing_if = "PluginInstancePurpose::is_runtime")]
-    #[ts(as = "Option<_>", optional)]
-    pub purpose: PluginInstancePurpose,
     pub project: ProjectId,
     pub principal: PrincipalId,
     pub alias: InstanceAlias,
@@ -430,7 +426,12 @@ mod observation_tests {
             "connection":"connection-test","instance":"instance-test","sequence":1,"request":"read-test",
             "body":{"type":"query_result","data":{"data":{},"completeness":"partial","source":null}}});
         let decode = |wire: &Value| RpcFrame::decode(&serde_json::to_vec(wire).unwrap());
-        let RpcBody::QueryResult { observed_at_ms, notices, .. } = decode(&wire).unwrap().body else {
+        let RpcBody::QueryResult {
+            observed_at_ms,
+            notices,
+            ..
+        } = decode(&wire).unwrap().body
+        else {
             panic!("expected observation");
         };
         assert_eq!(observed_at_ms, None);
@@ -440,7 +441,10 @@ mod observation_tests {
         let frame = decode(&wire).unwrap();
         assert_eq!(serde_json::to_value(&frame).unwrap()["body"], wire["body"]);
         wire["body"]["data"]["observed_at_ms"] = json!("now");
-        assert!(decode(&wire).is_err(), "text cannot become a fabricated timestamp");
+        assert!(
+            decode(&wire).is_err(),
+            "text cannot become a fabricated timestamp"
+        );
         wire["body"]["data"]["observed_at_ms"] = Value::Null;
         wire["body"]["data"]["notices"] = json!(["x".repeat(MAX_CONTROL_BYTES)]);
         let error = decode(&wire).unwrap_err();

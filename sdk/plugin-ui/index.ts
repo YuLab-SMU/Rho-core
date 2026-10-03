@@ -9,22 +9,8 @@ export { externalUrl } from "./external.js";
 export { ViewCloseCooperation } from "./view-close.js";
 export type { ViewCloseHandler, ViewCloseSnapshot } from "./view-close.js";
 export type { CapabilityKey, PluginViewRecord, PluginViewRequest } from "../plugin-protocol/index.js";
-export {
-  parseVisualDocument,
-  createVisualNode,
-  visualNodeKinds,
-  visualBindingValue,
-  visualConditionMatches,
-  validateVisualSourcePath,
-} from './visual-document.js';
-export type { VisualDocument, VisualNode, VisualNodeKind, VisualCondition, VisualAction, CustomComponent } from '../plugin-protocol/index.js';
-export { mountVisualDocument } from './visual-runtime.js';
-export type { VisualRuntimeOptions, VisualEventContext, VisualCustomInstance, VisualCustomRegistration } from './visual-runtime.js';
-export { createPollingVisualSubscription } from './visual-observations.js';
 export { inspectOriginalOperation, verifyOriginalOperation, isTerminalOperation, canonicalOperationValue, sameOperationValue } from './operations.js';
 export type { OperationIntent, OriginalOperationRecord } from './operations.js';
-export { componentAnnotationDialog, annotationSourceId } from './component-annotations.js';
-export type { AnnotationComponentSource, AnnotationNavigationState, AnnotationSenderOptions, ComponentAnnotationAnchor } from './component-annotations.js';
 export const UI_PROTOCOL_VERSION = 1;
 export const MAX_UI_MESSAGE_BYTES = 1024 * 1024;
 export const MAX_UI_PENDING = 128;

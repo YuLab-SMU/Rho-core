@@ -103,12 +103,20 @@ async fn host_restart_preserves_instance_view_and_original_operation_without_aut
         "alias":"retained","configuration":{"retained_counts":true}
     })).await.output.unwrap();
     let identity = activated["instance"]["identity"].clone();
-    let opened = run(&host, &context, "open", "windows.open_view", json!({
-        "view":{"instance":identity,"contribution":"view","window":"original-window","configuration":{},
-            "state":{"draft":"未发送的内容","original_request":"original-send"}},
-        "expected_layout_version":0,"group":null
-    })).await.output.unwrap();
-    let view = opened["view"].clone();
+    let opened = run(
+        &host,
+        &context,
+        "open",
+        "views.open",
+        json!({
+            "instance":identity,"contribution":"view","window":"original-window","configuration":{},
+                "state":{"draft":"未发送的内容","original_request":"original-send"}
+        }),
+    )
+    .await
+    .output
+    .unwrap();
+    let view = opened.clone();
     let view_args = json!({"view":view["view"]});
     let connection = query(&host, &context, "views.connection", view_args.clone()).await;
     let binding = query(
@@ -172,16 +180,7 @@ async fn host_restart_preserves_instance_view_and_original_operation_without_aut
     .await;
     assert_eq!(observed["observed_in_this_host"], false);
     assert_eq!(observed["instance"], suspended["instance"]);
-    assert_eq!(
-        query(
-            &host,
-            &context,
-            "windows.layout",
-            json!({"window":"original-window"})
-        )
-        .await,
-        opened["layout"]
-    );
+
     assert_eq!(
         query(&host, &context, "views.inspect", view_args.clone()).await,
         view
@@ -221,7 +220,7 @@ async fn host_restart_preserves_instance_view_and_original_operation_without_aut
     .await;
     let resume = json!({"instance":identity,"suspension":suspended["instance"]["suspension"]});
     let mut restricted = context.clone();
-    restricted.scopes.remove("plugins.write");
+    restricted.scopes.remove("plugins.run");
     refused(
         &host,
         &restricted,

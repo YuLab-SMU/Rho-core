@@ -244,7 +244,7 @@ impl PluginService {
                 return Ok(record);
             }
             if let PluginViewCloseMode::RetainAcknowledged { expected_version } = args.mode {
-                return self.close_view_at_version(context, &args.view, expected_version, true);
+                return self.close_view_at_version(context, &args.view, expected_version);
             }
             self.views
                 .lock()
@@ -296,6 +296,6 @@ impl PluginService {
                 return Err(invalid(format!("view state was not flushed: {reason}")));
             }
         }
-        self.close_view_at_version(context, &args.view, expected_version, true)
+        self.close_view_at_version(context, &args.view, expected_version)
     }
 }

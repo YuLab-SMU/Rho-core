@@ -93,7 +93,7 @@ async fn settled(
 }
 
 #[tokio::test]
-async fn flush_close_preserves_drafts_requires_each_document_and_commits_layout_atomically() {
+async fn flush_close_requires_each_document_and_releases_references_atomically() {
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path().join("project");
     fs::create_dir(&project).unwrap();
@@ -116,10 +116,9 @@ async fn flush_close_preserves_drafts_requires_each_document_and_commits_layout_
         )
         .await,
     );
-    let opened = run(&host, &context, "open", "windows.open_view", json!({"view":{"instance":instance.instance.identity,
-        "contribution":"view","window":"flush-window","configuration":{},"state":{"text":"acknowledged"}},
-        "expected_layout_version":0,"group":null})).await.output.unwrap();
-    let view = opened["view"]["view"].clone();
+    let opened = run(&host, &context, "open", "views.open", json!({"instance":instance.instance.identity,
+        "contribution":"view","window":"flush-window","configuration":{},"state":{"text":"acknowledged"}})).await.output.unwrap();
+    let view = opened["view"].clone();
     let connection = serde_json::from_value(
         query(&host, &context, "views.connection", json!({"view":view})).await,
     )
@@ -172,13 +171,6 @@ async fn flush_close_preserves_drafts_requires_each_document_and_commits_layout_
             .await
             .is_err()
     );
-    let before = query(
-        &host,
-        &context,
-        "windows.layout",
-        json!({"window":"flush-window"}),
-    )
-    .await;
     let first = accepted(&host, &context, "flush-refused", &view).await;
     let operation = channel.requested(&host, &context, "first-document").await;
     assert_eq!(operation, first.operation.operation_id.as_str());
@@ -223,16 +215,6 @@ async fn flush_close_preserves_drafts_requires_each_document_and_commits_layout_
     let failed = settled(&host, &context, &first).await;
     assert_eq!(failed.status, OperationStatus::Failed);
     assert!(failed.error.unwrap().contains("draft save failed"));
-    assert_eq!(
-        query(
-            &host,
-            &context,
-            "windows.layout",
-            json!({"window":"flush-window"})
-        )
-        .await,
-        before
-    );
     assert_eq!(
         channel
             .send(
@@ -289,10 +271,10 @@ async fn flush_close_preserves_drafts_requires_each_document_and_commits_layout_
         OperationStatus::Failed
     );
     // Force failure after marking the view closed. The one native transaction
-    // must roll back closure, revision release and window removal together.
+    // must roll back closure and revision release together.
     let catalog =
         rusqlite::Connection::open(repository_path(&db).join("catalog-v1.sqlite3")).unwrap();
-    catalog.execute_batch("CREATE TRIGGER reject_close_layout BEFORE INSERT ON plugin_window_layouts BEGIN SELECT RAISE(ABORT, 'close write failure'); END;").unwrap();
+    catalog.execute_batch("CREATE TRIGGER reject_close_write BEFORE UPDATE ON plugin_views BEGIN SELECT RAISE(ABORT, 'close write failure'); END;").unwrap();
     for (request, succeeds) in [("flush-write-fails", false), ("flush-succeeds", true)] {
         let close = accepted(&host, &context, request, &view).await;
         let operation = channel.requested(&host, &context, "first-document").await;
@@ -311,16 +293,6 @@ async fn flush_close_preserves_drafts_requires_each_document_and_commits_layout_
         assert_eq!(record["state"]["text"], "last 中文 draft");
         assert_eq!(record["state_version"], 2);
         if !succeeds {
-            assert_eq!(
-                query(
-                    &host,
-                    &context,
-                    "windows.layout",
-                    json!({"window":"flush-window"})
-                )
-                .await,
-                before
-            );
             assert!(
                 repository
                     .references(&archive.revision.id)
@@ -329,20 +301,10 @@ async fn flush_close_preserves_drafts_requires_each_document_and_commits_layout_
                     .any(|reference| reference.contains(view.as_str().unwrap()))
             );
             catalog
-                .execute_batch("DROP TRIGGER reject_close_layout;")
+                .execute_batch("DROP TRIGGER reject_close_write;")
                 .unwrap();
         }
     }
-    let layout = query(
-        &host,
-        &context,
-        "windows.layout",
-        json!({"window":"flush-window"}),
-    )
-    .await;
-    assert_eq!(layout["version"], 2);
-    assert_eq!(layout["layout"]["views"], json!([]));
-    assert_eq!(layout["layout"]["selected"], Value::Null);
     assert!(
         channel
             .send(

@@ -1,3 +1,5 @@
+#[path = "../../plugins/tests/fixtures/ui_package.rs"]
+mod ui_package;
 use serde_json::{Value, json};
 use std::process::Command;
 
@@ -7,17 +9,28 @@ fn independent_cli_processes_reuse_durable_operation_and_query_without_writes() 
     let db = dir.path().join("next.sqlite");
     let project = dir.path().join("project");
     std::fs::create_dir(&project).unwrap();
+    let activation = ui_package::install(&db, &dir.path().join("package"));
     let invoke = |name: &str| {
+        let mut arguments = activation.clone();
+        arguments["alias"] = json!(name);
         Command::new(env!("CARGO_BIN_EXE_rho"))
-            .arg("--project").arg(&project)
+            .arg("--project")
+            .arg(&project)
             .arg("--database")
             .arg(&db)
-            .args(["invoke", "--client-request-id", "cli-once", "--capability", "scenarios.checkpoint", "--arguments"])
-            .arg(json!({"scenario":"cli", "expected_head":null, "name":name, "instances":{}, "providers":[], "layout":{"kind":"empty"}}).to_string())
+            .args([
+                "invoke",
+                "--client-request-id",
+                "cli-once",
+                "--capability",
+                "plugins.activate",
+                "--arguments",
+            ])
+            .arg(arguments.to_string())
             .output()
             .unwrap()
     };
-    let first = invoke("First");
+    let first = invoke("first");
     assert!(
         first.status.success(),
         "{}",
@@ -26,14 +39,14 @@ fn independent_cli_processes_reuse_durable_operation_and_query_without_writes() 
     let value: Value = serde_json::from_slice(&first.stdout).unwrap();
     assert_eq!(value["operation"]["status"], json!("succeeded"));
     assert_eq!(value["runtime"], json!("plugins"));
-    let repeat = invoke("First");
+    let repeat = invoke("first");
     let repeated: Value = serde_json::from_slice(&repeat.stdout).unwrap();
     assert_eq!(repeated, value);
-    let conflict = invoke("Changed");
+    let conflict = invoke("changed");
     assert!(!conflict.status.success());
     let conflict: Value = serde_json::from_slice(&conflict.stderr).unwrap();
-    // The scenario owner rejects the stale expected head before admitting a changed request.
-    assert_eq!(conflict["diagnostic"]["code"], "content_changed");
+    // A changed request cannot reuse the original idempotency identity.
+    assert_eq!(conflict["diagnostic"]["code"], "idempotency_conflict");
 
     let before = std::fs::read(&db).unwrap();
     let query = Command::new(env!("CARGO_BIN_EXE_rho"))

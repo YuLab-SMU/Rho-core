@@ -99,10 +99,8 @@ fn generic_capabilities(host: &NextHost) -> BTreeSet<String> {
     for id in [
         "plugins.list",
         "plugins.activate",
-        "plugins.preview",
         "operation.get",
         "operation.list_recent",
-        "windows.layout",
         "workspace.paths",
     ] {
         assert!(ids.contains(id), "{id}");
@@ -158,7 +156,7 @@ async fn native_contract_metadata_is_exact_readonly_scoped_and_excludes_plugins(
     let mut reader = admin.clone();
     reader.scopes = BTreeSet::from(["plugins.read".into()]);
     let before = query(&host, &admin, "operation.list_recent", json!({"limit":100})).await;
-    for id in ["plugins.list", "plugins.preview", "scenarios.apply"] {
+    for id in ["plugins.list", "plugins.activate", "plugins.remove"] {
         let key = CapabilityRef::new(id, 1).unwrap();
         let expected = host
             .capabilities()

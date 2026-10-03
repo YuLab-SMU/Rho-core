@@ -6,7 +6,6 @@ Rust source of these definitions is the independently packageable
 `rho-plugin-protocol` crate. Other languages can implement the same JSON protocol.
 
 `schema/manifest.json`, `schema/archive.json`, `schema/rpc.json`,
-`schema/window-layout.json`, `schema/scenario.json`, `schema/visual-document.json`, and the two
 `schema/resource-transfer-*.json` documents define the wire shapes.
 Semantic checks (identity formats, references, scope, schema compilation, digests,
 limits and lifecycle) also run in the receiving owner. JSON Schema alone does not
@@ -52,7 +51,7 @@ and a plain filename, using that view's declared `plugins.archive_read@1` grant
 intersected with current parent authority. Native admission validates the original
 scope and byte reference; the containing browser separately checks a user gesture,
 the complete bytes and live authority before requesting a download. Its response
-does not prove local-file saving. Fixture preview and closure preparation refuse
+does not prove local-file saving. Closure preparation refuses
 this action. It creates no scientific Operation.
 
 Ordinary plugins, connected CLI and MCP use the same `plugins.archive_*@1`
@@ -119,43 +118,6 @@ queue. External tools or Studio own those workflows. Core checks existing packag
 identities and artifacts; source build recipes are descriptive metadata only.
 Removed development contracts are absent from the SDK inventory.
 
-`plugins.preview@1` accepts `PreviewPlugin` and returns an ordinary
-`PluginInstanceObservation` with `purpose:"fixture_preview"`. It requires
-`plugins.run`, an installed source revision and an exact built artifact, an alias,
-configuration and `queries`. Each `PluginPreviewQuery` supplies a declared
-required/optional capability, exact arguments and fixture data. Requests are
-limited to 128 fixtures and 256 KiB; duplicate matches are invalid. Preview does
-not need the native target platform, activate dependencies or start a backend.
-It receives no Host grants or native project path and cannot be a scenario's
-runtime instance or a provider. Its query fixtures do not participate in normal
-capability resolution or contract collision checks.
-
-For normal instances and views, `purpose` is omitted and means `runtime`; normal
-backend initialization retains its original protocol-v1 shape. Only fixture
-instances/views carry the new marker, and they are never sent to native backends.
-`plugins.instances` defaults to runtime instances only, so existing protocol-v1
-readers continue receiving the original record shape. Management tools may set
-`include_previews:true` to include previews; pagination and counts use that same
-selected set. The repository's administrative CLI listing includes all purposes.
-
-Open preview views with `views.open` or `windows.open_view`. The normal private
-view connection carries `purpose:"fixture_preview"` in its public view record.
-Query replies use the ordinary observation envelope with `source:"fixture_preview"`
-and an explicit fixture notice. Unmatched queries return unavailable without
-consulting the real Host. Invocations, controls, operation reads and cancellation,
-original resource downloads and external links are denied. Only self `set_state`,
-close cooperation and explicit text copying retain intrinsic presentation authority.
-Fixtures cannot manufacture committed Operations or scientific evidence.
-
-Preview uses the same immutable asset channel, quotas, identity/sequence checks,
-revision references, acknowledged state and close protocol as runtime views.
-Close its views and call `plugins.release` explicitly. A new Host does not silently
-reopen or rebuild the preview; retain original Operation identities after lost
-acknowledgements. A fixture instance that was never native can be explicitly
-released after its historical views close, without claiming native process recovery.
-Real-backend testing in a disposable project is a separate lifecycle, not an option
-that elevates a fixture instance.
-
 ### External development testing
 
 The Core protocol has no test-project lifecycle or child Host selector. A developer
@@ -219,31 +181,6 @@ the paths in `data`. Preserve lexical paths and resolved aliases, including
 nonexistent sidecars. Limits are 256 paths, 4096 UTF-8 bytes per path and 128 KiB
 for the encoded path list. This query neither scans files nor starts a runtime,
 and does not extend the initialization message or provide an OS sandbox.
-
-`windows.layout@1` accepts `PluginWindowArguments` and observes a
-`PluginWindowLayout`. `windows.update_layout@1` accepts `UpdatePluginWindowLayout`
-through the ordinary Operation port with `plugins.run`. It saves the arrangement
-using the window's `expected_version`; it does not open, close or move ownership of
-views. Project and principal come from the Host. Every referenced view must belong
-to that exact window and scope, and a view caller cannot address another window.
-Closed views can remain explicit placeholders without live connections or an
-installed artifact. Reads never reconstruct them or mutate their saved state.
-
-Layout nodes are empty regions, weighted splits and selected tab groups. IDs are
-unique across groups and views. Limits are 256 view references, 1024 structural
-nodes, depth 32 and a 256 KiB update payload. Split weights must be positive and
-finite, including their sum. A layout version is a presentation precondition for
-one window, not a scientific revision.
-
-`windows.open_view@1` accepts `OpenPluginWindowView` through the same Operation
-port and returns `OpenedPluginWindowView`: a public view record and the newly saved
-layout. `view` selects an exact active instance, contribution, configuration and
-state. `expected_layout_version` fences the placement; `group` names an existing
-tab group. A null group creates the first tab group only in an empty window.
-Creation, the revision reference and selection commit in one transaction; a stale
-version, missing group or invalid view leaves them unchanged. The new connection
-is published only after commit. Repeating the original request returns its original
-Operation, without a second view. Scenario preparation/application remains separate.
 
 ## Runtime protocol
 
@@ -344,78 +281,6 @@ The query accepts no selector, opens nothing and returns no call or asset token.
 This observation cannot authorize a later request or prove continuing liveness;
 owners must revalidate their original controller when admitting later writes.
 Native backends are trusted local code: this is UI, failure and lifetime isolation, not an OS sandbox.
-
-## Scenarios and visual source
-
-Scenarios pin instance aliases, dependencies, configuration, layouts and unique
-default providers. A window selects its own scenario; switching does not end
-analysis processes. View state carries the revision that authored its schema.
-Opening defaults under another revision is explicit; old state is retained.
-
-`VisualDocument` stores a node map with stable identities. Containers, splits,
-tabs, text, buttons, forms, lists, tables, media and custom components share this
-structure. Data bindings use property paths without `eval`. Operations are only
-event actions; render/mount is not an allowed action trigger. Custom source is
-referenced by path, never reverse-engineered from the rendered tree. A data-source
-capability must additionally resolve to a query when the document is mounted.
-
-Checkpoint configuration uses public values and credential references. Actual
-credential bytes remain with the credential owner, outside revision and scenario
-storage. History is not a rollback mechanism for scientific effects or R memory.
-
-`scenarios.list@1` returns up to 100 `ScenarioSummary` values with an exclusive
-scenario-identity cursor. `scenarios.get@1` reads one exact `ScenarioRevision`;
-follow its parent for history. Both use `plugins.read` and the authenticated project
-and principal. They do not initialize a provider or change a window.
-
-`scenarios.checkpoint@1` accepts `SaveScenario` under `plugins.write`. A null
-`expected_head` creates a named scenario; an existing head must match exactly.
-The owner computes the content identity and commits the immutable checkpoint, new
-head and all package protections together. Earlier checkpoints keep their references.
-Restoring a previous composition means saving it against the current head, creating
-another child. Retain the original request identity after a lost acknowledgement.
-
-Save validates structural bounds (256 KiB, 256 instances, 512 providers and 1024
-layout nodes including views) without claiming the referenced artifacts are available.
-Missing packages remain explicit references and become protected if imported later.
-The per-instance `optional_capabilities` selection is retained without conferring
-activation authority.
-
-`scenarios.prepare@1` and `scenarios.apply@1` both accept `ApplyScenario` under
-`plugins.run`. The caller explicitly prepares instances with `plugins.activate`
-and views with `views.open` before applying. Supply every scenario alias as an exact
-`InstanceRef`, and every reusable view definition id as its prepared live view id.
-Preparation does not reserve, activate or change anything. It checks the expected
-window layout version, exact artifacts/configuration, manifest dependency aliases,
-frozen optional grants, caller authority, view schemas, resource context and live
-readiness. Apply repeats these checks and commits layout plus selection in one
-transaction. Failure leaves the former window composition intact. Preparation
-resources remain inspectable through normal instance/view ports; apply never
-releases them or cancels scientific work.
-
-Reuse is explicit. The chosen live view must have the same owner, contribution,
-configuration and resource context and belong to this window. Its current state
-and unsynchronized content are retained, even when different from the checkpoint.
-To open the checkpoint's saved state, explicitly create a new view with that state.
-Hiding a former view does not close its channel or backend. `OpenPluginView.resource`
-is optional immutable context and is present in the public record/bootstrap when
-supplied. Its media type must be declared by the contribution and its retained
-identity must match this project/principal. Qualification reads bounded metadata;
-resource byte reads still require the separate resource grant and verify bytes.
-
-`windows.scenario@1` returns `WindowScenarioSnapshot`: selection and current layout
-observed together. `applied_layout_version` identifies the initial application;
-later docking edits may advance the layout version. Retained selection does not
-attest to runtime readiness after disconnect. `windows.resolve@1` accepts
-`ResolveWindowProvider` and resolves only the exact selected default, including
-its target. Both use `plugins.run` and preserve caller/project/window restrictions.
-There is no fallback to another active revision. New interactions may resolve the
-current selection; existing documents and accepted work retain their original
-explicit bindings. Apply uses the shared Operation idempotency contract: after a
-lost acknowledgement inspect the original operation, rather than retrying under
-a new request identity.
-
-Regenerate these artifacts from Rho-core with `node scripts/generate.mjs`.
 
 ## Document draft content
 

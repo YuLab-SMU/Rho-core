@@ -1035,8 +1035,12 @@ mod tests {
 
     #[tokio::test]
     async fn invocation_uses_host_idempotency_and_bounded_json() {
-        let (_temp, state, app) = fixture().await;
-        let input = frame(&state, "invoke", json!({"client_request_id":"http-test", "capability":{"id":"scenarios.checkpoint","version":1},"arguments":{"scenario":"http-fixture","expected_head":null,"name":"HTTP fixture","instances":{},"providers":[],"layout":{"kind":"empty"}},"preconditions":[]})).await;
+        let (temp, state, app) = fixture().await;
+        let activation = ui_package::install(
+            &temp.path().join("next.sqlite"),
+            &temp.path().join("package"),
+        );
+        let input = frame(&state, "invoke", json!({"client_request_id":"http-test", "capability":{"id":"plugins.activate","version":1},"arguments":activation,"preconditions":[]})).await;
         let first = json_body(request(&app, "/api/host", Some(input.clone())).await).await;
         assert_eq!(first["ok"], true, "{first}");
         assert_eq!(first["result"]["status"], "succeeded");
@@ -1188,3 +1192,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../plugins/tests/fixtures/ui_package.rs"]
+mod ui_package;

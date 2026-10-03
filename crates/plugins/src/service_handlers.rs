@@ -15,15 +15,6 @@ fn decode<T: DeserializeOwned>(value: &Value) -> Result<T, OperationError> {
 fn normalize<T: DeserializeOwned + Serialize>(value: &Value) -> Result<Value, OperationError> {
     serde_json::to_value(decode::<T>(value)?).map_err(invalid)
 }
-fn scenario_error(error_value: PluginError) -> OperationError {
-    match error_value {
-        PluginError::Conflict => OperationError::ContentChanged("scenario head changed".into()),
-        PluginError::Missing(id) => OperationError::NotFound(id),
-        PluginError::Invalid(message) => invalid(message),
-        PluginError::Contract(message) => invalid(message),
-        other => error(other),
-    }
-}
 fn source_error(value: PluginError) -> OperationError {
     match value {
         PluginError::Missing(id) => OperationError::NotFound(id),
@@ -69,12 +60,6 @@ pub(crate) fn register(
         "views.caller",
         "views.presence",
         "views.connection",
-        "windows.layout",
-        "scenarios.list",
-        "scenarios.get",
-        "scenarios.prepare",
-        "windows.scenario",
-        "windows.resolve",
         "plugins.repository",
         "plugins.delegated_operation",
         "plugins.list",
@@ -98,13 +83,8 @@ pub(crate) fn register(
         "views.reconnect",
         "views.update",
         "views.close",
-        "windows.update_layout",
-        "windows.open_view",
-        "scenarios.checkpoint",
-        "scenarios.apply",
         "plugins.activate",
         "plugins.resume",
-        "plugins.preview",
         "plugins.release",
         "plugins.remove",
         "plugins.reconcile_references",
@@ -128,62 +108,6 @@ fn descriptor(id: &str) -> host::CapabilityDescriptor {
             false,
             "operation.read",
         ),
-        "plugins.preview" => (
-            schema_for!(PreviewPlugin).to_value(),
-            schema_for!(PluginInstanceObservation).to_value(),
-            json!({"revision":digest(),"artifact":digest(),"alias":"preview","configuration":{},"queries":[]}),
-            "Create an isolated fixture presentation instance without starting a backend or granting Host capabilities",
-            true,
-            PLUGINS_RUN_SCOPE,
-        ),
-        "scenarios.prepare" | "scenarios.apply" => (
-            schema_for!(ApplyScenario).to_value(),
-            schema_for!(WindowScenarioSnapshot).to_value(),
-            json!({"window":"window-example","revision":digest(),"expected_layout_version":0,"instances":{},"views":{}}),
-            "Validate or atomically select an exact prepared scenario in one window",
-            id == "scenarios.apply",
-            PLUGINS_RUN_SCOPE,
-        ),
-        "windows.scenario" => (
-            schema_for!(PluginWindowArguments).to_value(),
-            schema_for!(WindowScenarioSnapshot).to_value(),
-            json!({"window":"window-example"}),
-            "Observe a window's scenario and current layout together",
-            false,
-            PLUGINS_RUN_SCOPE,
-        ),
-        "windows.resolve" => (
-            schema_for!(ResolveWindowProvider).to_value(),
-            schema_for!(ProviderBinding).to_value(),
-            json!({"window":"window-example","capability":{"id":"example.read","version":1}}),
-            "Resolve this window's selected exact provider without fallback",
-            false,
-            PLUGINS_RUN_SCOPE,
-        ),
-        "scenarios.list" => (
-            schema_for!(ListScenarios).to_value(),
-            schema_for!(ScenarioPage).to_value(),
-            json!({"after":null,"limit":20}),
-            "List the caller's named project scenarios",
-            false,
-            PLUGINS_READ_SCOPE,
-        ),
-        "scenarios.get" => (
-            schema_for!(ScenarioRevisionArguments).to_value(),
-            schema_for!(ScenarioRevision).to_value(),
-            json!({"revision":digest()}),
-            "Read an exact retained scenario checkpoint",
-            false,
-            PLUGINS_READ_SCOPE,
-        ),
-        "scenarios.checkpoint" => (
-            schema_for!(SaveScenario).to_value(),
-            schema_for!(ScenarioRevision).to_value(),
-            json!({"scenario":"analysis","expected_head":null,"name":"Analysis","instances":{},"providers":[],"layout":{"kind":"empty"}}),
-            "Create a scenario checkpoint and advance its expected head atomically",
-            true,
-            PLUGINS_WRITE_SCOPE,
-        ),
         "workspace.paths" => (
             schema_for!(Empty).to_value(),
             schema_for!(WorkspacePaths).to_value(),
@@ -191,30 +115,6 @@ fn descriptor(id: &str) -> host::CapabilityDescriptor {
             "Read Host-owned project and protected path boundaries",
             false,
             "project.read",
-        ),
-        "windows.layout" => (
-            schema_for!(PluginWindowArguments).to_value(),
-            schema_for!(PluginWindowLayout).to_value(),
-            json!({"window":"window-example"}),
-            "Read one window's retained plugin layout without opening views",
-            false,
-            PLUGINS_RUN_SCOPE,
-        ),
-        "windows.open_view" => (
-            schema_for!(OpenPluginWindowView).to_value(),
-            schema_for!(OpenedPluginWindowView).to_value(),
-            json!({"view":{"instance":instance(),"contribution":"inspector","window":"window-example","configuration":{},"state":{}},"expected_layout_version":0,"group":null}),
-            "Create and select an exact plugin view in a window atomically",
-            true,
-            PLUGINS_RUN_SCOPE,
-        ),
-        "windows.update_layout" => (
-            schema_for!(UpdatePluginWindowLayout).to_value(),
-            schema_for!(PluginWindowLayout).to_value(),
-            json!({"window":"window-example","expected_version":0,"layout":{"kind":"empty"}}),
-            "Save a scoped window layout using its expected version",
-            true,
-            PLUGINS_RUN_SCOPE,
         ),
         "views.caller" => (
             schema_for!(Empty).to_value(),
@@ -424,7 +324,7 @@ fn descriptor(id: &str) -> host::CapabilityDescriptor {
     };
     let mut descriptor = host::CapabilityDescriptor {
         kind:if operation {host::CapabilityKind::Operation}else{host::CapabilityKind::Query},capability:key(id),domain:"plugins".into(),input_schema:input,output_schema:output,recovery_schema:json!({"type":["object","null"]}),
-        required_scopes:BTreeSet::from([scope.into()]),potential_effects:match id {"plugins.activate"|"plugins.resume"=>BTreeSet::from([host::EffectHint::MaySpawnProcess,host::EffectHint::MayMutateRuntime]),"plugins.preview"|"plugins.release"|"plugins.reconcile_references"=>BTreeSet::from([host::EffectHint::MayMutateRuntime]),_=>BTreeSet::new()},
+        required_scopes:BTreeSet::from([scope.into()]),potential_effects:match id {"plugins.activate"|"plugins.resume"=>BTreeSet::from([host::EffectHint::MaySpawnProcess,host::EffectHint::MayMutateRuntime]),"plugins.release"|"plugins.reconcile_references"=>BTreeSet::from([host::EffectHint::MayMutateRuntime]),_=>BTreeSet::new()},
         idempotency:if operation {host::IdempotencyClass::CallerScoped}else{host::IdempotencyClass::Pure},retry:if operation {host::RetryClass::ReconcileFirst}else{host::RetryClass::Safe},cancellation:host::CancellationClass::Unsupported,
         documentation:host::CapabilityDocumentation {
             summary:summary.into(),purpose:summary.into(),when_to_use:vec!["Manage or observe ordinary installed packages through the shared Host ports.".into()],
@@ -462,22 +362,6 @@ fn descriptor(id: &str) -> host::CapabilityDescriptor {
         descriptor.documentation.effects = "Read at most one parent admission and its exact original request record. No runtime start, cancellation, recovery, reactivation or scientific mutation.".into();
         descriptor.documentation.related_capabilities = vec![key("operation.get")];
     }
-    if id.starts_with("scenarios.") {
-        descriptor.domain = "scenarios".into();
-        descriptor.documentation.owner = "plugins".into();
-        descriptor.documentation.when_to_use = vec!["Save named project compositions or inspect their exact history through the same public ports used by Plugin Studio.".into()];
-        descriptor.documentation.limitations = vec!["Project and principal come from the caller. Checkpoints record composition metadata only; no window changes, provider activation, credential capture, scientific execution or rollback occurs.".into(),
-            "Saving checks structure and the expected head, not package availability or runtime readiness. Missing exact revisions remain explicit references. Applying a scenario requires separate validation and activation; saved optional selections do not grant authority.".into(),
-            "Every checkpoint protects referenced plugin revisions, including earlier heads. Saving a former composition creates a new child; it never rewrites history or discards references.".into()];
-        descriptor.documentation.effects = if operation { "Atomically save immutable scenario metadata, its head and protecting package references." } else { "Bounded observation only. Does not create a scenario, activate a provider or change a window." }.into();
-        descriptor.documentation.retry_rule = if operation { "Retain the original client_request_id after a lost acknowledgement and inspect that Operation. Read the current head separately before making a new edit." } else { "Follow the explicit exclusive list cursor or the original revision's parent." }.into();
-        descriptor.documentation.related_capabilities = vec![
-            key("scenarios.list"),
-            key("scenarios.get"),
-            key("scenarios.checkpoint"),
-        ];
-        descriptor.documentation.position_units = vec!["Checkpoint metadata is limited to 256 KiB, 256 instances, 512 providers and 1024 layout nodes including views. Page limits are 1–100.".into()];
-    }
     if id == "plugins.project_coverage" {
         descriptor
             .required_scopes
@@ -485,21 +369,6 @@ fn descriptor(id: &str) -> host::CapabilityDescriptor {
         descriptor.documentation.limitations = vec!["Returns only whether all recorded project instances are visible to this principal. It includes preparing, failed, released and historical instances; it exposes no foreign identities, counts, configuration or logs.".into(), "This is current visibility metadata, not a lease or native-process proof. Read owner-specific references separately; incomplete or unavailable coverage cannot establish absence. No provider is started, reconnected or recovered.".into()];
         descriptor.documentation.related_capabilities =
             vec![key("plugins.instances"), key("operation.project_coverage")];
-    }
-    if id == "plugins.instances" {
-        descriptor.documentation.limitations.push("Runtime discovery excludes fixture previews by default, preserving normal protocol-v1 instance replies. Management tools may explicitly set include_previews:true for a complete lifecycle listing; its pagination and total cover that selected set.".into());
-    }
-    if id == "plugins.preview" {
-        descriptor.documentation.limitations = vec![
-            "Runs the exact retained artifact's view code with no backend, project path, provider registration or Host grant. Optional and required query fixtures are exact argument matches; a miss never falls through to real queries.".into(),
-            "At most 128 fixtures and 256 KiB per preview request. Only view state, close cooperation and explicit text copy use real presentation owners. Other operations, cancellation, resource downloads and external navigation are denied.".into(),
-            "Open views through views.open or windows.open_view, close them and release the preview explicitly. A preview cannot satisfy a scenario runtime instance. Restart does not silently recreate its connection or fixtures.".into(),
-        ];
-        descriptor.documentation.related_capabilities = vec![
-            key("views.open"),
-            key("windows.open_view"),
-            key("plugins.release"),
-        ];
     }
     if id == "plugins.activate" {
         descriptor.documentation.limitations.push("Optional capabilities must be declared by this exact manifest and explicitly selected in optional_capabilities. Selection cannot enlarge declared scopes or caller authority; it does not install or start another provider. The selected grants stay fixed for this instance and its views.".into());
@@ -527,53 +396,6 @@ fn descriptor(id: &str) -> host::CapabilityDescriptor {
             vec![key("resources.inspect"), key("resources.read")];
         descriptor.documentation.position_units = vec!["offset and limit are bytes. Read limit is 1–262144; next is the next byte offset, or null at EOF.".into()];
     }
-    if id.starts_with("windows.") {
-        descriptor.domain = "windows".into();
-        descriptor.documentation.owner = "windows".into();
-        descriptor.documentation.when_to_use =
-            vec!["Read or save one window's arrangement of exact plugin view identities.".into()];
-        descriptor.documentation.limitations = vec!["Layouts belong to the authenticated principal and normalized project. A plugin view can address only its original window. Cross-window view references are refused.".into(),
-            "Saving layout does not activate plugins, reopen views, release instances, start a scientific runtime, or switch a scenario. Closed or unavailable views remain explicit placeholders.".into()];
-        descriptor.documentation.effects = if operation {
-            "Save presentation only. No view state, scientific state or runtime lifetime changes."
-        } else {
-            "Bounded read. An absent window is empty and is not created by this observation."
-        }
-        .into();
-        descriptor.documentation.related_capabilities = vec![
-            key("windows.layout"),
-            key("windows.update_layout"),
-            key("views.inspect"),
-        ];
-        descriptor.documentation.position_units = vec!["Split weights are finite positive ratios. At most 256 views, 1024 structural nodes, depth 32 and 256 KiB per layout.".into()];
-    }
-    if id == "windows.open_view" {
-        descriptor.documentation.when_to_use = vec!["Open a contributed view in an explicit existing tab group, or create the first group in an empty window.".into()];
-        descriptor.documentation.effects = "Atomically create one scoped view, retain its exact revision, and select it in the expected window layout. Does not start or stop a backend.".into();
-        descriptor.documentation.limitations.push("The view instance must already be active. A null group is valid only for an empty window; no panel names or fallback routing are inferred. Conflict or validation failure leaves the view and layout unchanged.".into());
-    }
-    if matches!(
-        id,
-        "scenarios.prepare" | "scenarios.apply" | "windows.scenario" | "windows.resolve"
-    ) {
-        descriptor.documentation.when_to_use = vec!["Prepare and apply a complete scene in one explicit window, or inspect its exact selected providers.".into()];
-        descriptor.documentation.retry_rule = if operation { "Retain client_request_id after lost acknowledgement and inspect the original Operation. Observe the current window version before a new application." } else { "Repeat a bounded observation; preparation reserves nothing and apply revalidates it." }.into();
-        descriptor.documentation.position_units = vec![
-            "Application and prepared output are limited to 256 KiB; live layouts allow 256 views."
-                .into(),
-        ];
-        descriptor.documentation.limitations = vec![
-            "Prepare instances and views through ordinary public activation and view ports. The complete scene requires exact Ready identities, artifacts, configuration, selected grants and manifest dependency bindings. No provider starts or stops here.".into(),
-            "Apply revalidates preparation and atomically commits one window's layout and provider selection against its expected layout version. Other windows, existing operations and hidden views retain their identities and current state.".into(),
-            "A preparation is an observation, not a reservation. A saved selection is not evidence of live providers after disconnection. Missing exact providers never fall back to another instance.".into()];
-        descriptor.documentation.effects = if operation { "Change only the addressed window's presentation and default provider selection in one transaction." } else { "Bounded read of composition and native readiness; no activation, reconnection, view creation or scientific call." }.into();
-        descriptor.documentation.related_capabilities = vec![
-            key("scenarios.prepare"),
-            key("scenarios.apply"),
-            key("windows.scenario"),
-            key("windows.resolve"),
-        ];
-    }
     if id == "views.connection" {
         descriptor.documentation.when_to_use =
             vec!["Connect the trusted containing shell to an already opened view.".into()];
@@ -590,12 +412,6 @@ fn instance() -> Value {
 }
 fn normalized(id: &str, value: &Value) -> Result<Value, OperationError> {
     match id {
-        "scenarios.list" => normalize::<ListScenarios>(value),
-        "scenarios.get" => normalize::<ScenarioRevisionArguments>(value),
-        "scenarios.prepare" | "scenarios.apply" => normalize::<ApplyScenario>(value),
-        "windows.scenario" => normalize::<PluginWindowArguments>(value),
-        "windows.resolve" => normalize::<ResolveWindowProvider>(value),
-        "scenarios.checkpoint" => normalize::<SaveScenario>(value),
         "resources.list" => normalize::<ResourceList>(value),
         "resources.inspect" => normalize::<ResourceInspect>(value),
         "resources.read" => normalize::<ResourceRead>(value),
@@ -616,12 +432,8 @@ fn normalized(id: &str, value: &Value) -> Result<Value, OperationError> {
         }
         "views.close" => normalize::<ClosePluginView>(value),
         "views.open" => normalize::<OpenPluginView>(value),
-        "plugins.preview" => normalize::<PreviewPlugin>(value),
         "views.update" => normalize::<UpdatePluginView>(value),
         "views.reconnect" => normalize::<ReconnectPluginView>(value),
-        "windows.layout" => normalize::<PluginWindowArguments>(value),
-        "windows.update_layout" => normalize::<UpdatePluginWindowLayout>(value),
-        "windows.open_view" => normalize::<OpenPluginWindowView>(value),
         "plugins.activate" => normalize::<ActivatePlugin>(value),
         "plugins.reconcile_references" => normalize::<Reconcile>(value),
         _ => unreachable!(),
@@ -650,51 +462,6 @@ impl QueryHandler for Read {
     ) -> Result<host::QuerySnapshot, OperationError> {
         let service = &self.service;
         let data = match self.id {
-            "scenarios.prepare" => {
-                let _guard = service.gate.lock().await;
-                json!(service.prepare_scenario_application(context, &decode(value)?)?)
-            }
-            "windows.scenario" => {
-                let args: PluginWindowArguments = decode(value)?;
-                service.check_window_context(context, &args.window)?;
-                json!(
-                    service
-                        .repository
-                        .lock()
-                        .unwrap()
-                        .window_scenario(
-                            &service.project,
-                            &plugin_principal_id(context.principal()),
-                            &args.window
-                        )
-                        .map_err(crate::scenario_application::fault)?
-                )
-            }
-            "windows.resolve" => json!(service.resolve_window_provider(context, &decode(value)?)?),
-            "scenarios.list" => json!(
-                service
-                    .repository
-                    .lock()
-                    .unwrap()
-                    .scenarios(
-                        &service.project,
-                        &plugin_principal_id(context.principal()),
-                        &decode(value)?
-                    )
-                    .map_err(scenario_error)?
-            ),
-            "scenarios.get" => json!(
-                service
-                    .repository
-                    .lock()
-                    .unwrap()
-                    .scenario_revision(
-                        &service.project,
-                        &plugin_principal_id(context.principal()),
-                        &decode::<ScenarioRevisionArguments>(value)?.revision
-                    )
-                    .map_err(scenario_error)?
-            ),
             "plugins.project_coverage" => json!(
                 service
                     .repository
@@ -707,22 +474,6 @@ impl QueryHandler for Read {
                     .map_err(error)?
             ),
             "workspace.paths" => json!(service.workspace_paths),
-            "windows.layout" => {
-                let args: PluginWindowArguments = decode(value)?;
-                service.check_window_context(context, &args.window)?;
-                json!(
-                    service
-                        .repository
-                        .lock()
-                        .unwrap()
-                        .window_layout(
-                            &service.project,
-                            &plugin_principal_id(context.principal()),
-                            &args.window
-                        )
-                        .map_err(error)?
-                )
-            }
             "views.inspect" => {
                 json!(service.view_record(context, &decode::<PluginViewArguments>(value)?.view)?)
             }
@@ -823,11 +574,10 @@ impl QueryHandler for Read {
                     .repository
                     .lock()
                     .unwrap()
-                    .recorded_instances_filtered(
+                    .recorded_instances_scoped(
                         args.after.as_ref(),
                         args.limit as usize,
                         Some((&service.project, &principal)),
-                        args.include_previews,
                     )
                     .map_err(error)?;
                 let instances = page
@@ -990,83 +740,6 @@ impl OperationHandler for Manage {
             identity: self.service.scope.clone(),
         };
         match self.id {
-            "plugins.preview" => {
-                let args: PreviewPlugin = decode(value)?;
-                self.service.prepare_preview(&args)?;
-                revision = Some(args.revision);
-                target = host::TargetRef {
-                    kind: "plugin_instance".into(),
-                    identity: format!("plugin-{}", uuid::Uuid::new_v4().simple()),
-                };
-            }
-            "scenarios.apply" => {
-                let args: ApplyScenario = decode(value)?;
-                self.service.prepare_scenario_application(context, &args)?;
-                target = host::TargetRef {
-                    kind: "plugin_window".into(),
-                    identity: format!(
-                        "{}:{}:{}",
-                        self.service.project,
-                        plugin_principal_id(context.principal()),
-                        args.window
-                    ),
-                };
-            }
-            "scenarios.checkpoint" => {
-                let principal = plugin_principal_id(context.principal());
-                let args: SaveScenario = decode(value)?;
-                self.service
-                    .repository
-                    .lock()
-                    .unwrap()
-                    .prepare_scenario(&self.service.project, &principal, &args)
-                    .map_err(scenario_error)?;
-                target = host::TargetRef {
-                    kind: "scenario".into(),
-                    identity: format!("{}:{}:{}", self.service.project, principal, args.scenario),
-                };
-            }
-            "windows.open_view" => {
-                let args: OpenPluginWindowView = decode(value)?;
-                let id = ViewInstanceId::new(format!("view-{}", uuid::Uuid::new_v4().simple()))
-                    .map_err(error)?;
-                self.service.prepare_window_view(context, &id, &args)?;
-                revision = Some(args.view.instance.revision);
-                target = host::TargetRef {
-                    kind: "plugin_view".into(),
-                    identity: id.to_string(),
-                };
-            }
-            "windows.update_layout" => {
-                let args: UpdatePluginWindowLayout = decode(value)?;
-                self.service.check_window_context(context, &args.window)?;
-                let ids = args.layout.view_ids().map_err(invalid)?;
-                if serde_json::to_vec(&args).map_err(invalid)?.len() > MAX_CONTROL_BYTES / 4 {
-                    return Err(invalid("window layout exceeds 256 KiB"));
-                }
-                let principal = plugin_principal_id(context.principal());
-                let current = self
-                    .service
-                    .repository
-                    .lock()
-                    .unwrap()
-                    .window_layout(&self.service.project, &principal, &args.window)
-                    .map_err(error)?;
-                if current.version != args.expected_version {
-                    return Err(OperationError::ContentChanged(
-                        "window layout changed".into(),
-                    ));
-                }
-                for id in ids {
-                    if self.service.view_record(context, &id)?.window != args.window {
-                        return Err(invalid("window view is unavailable in this scope"));
-                    }
-                }
-                target = host::TargetRef {
-                    kind: "plugin_window".into(),
-                    identity: format!("{}:{}:{}", self.service.project, principal, args.window),
-                };
-            }
             "views.open" => {
                 let args: OpenPluginView = decode(value)?;
                 self.service.prepare_view(context, &args)?;
@@ -1160,7 +833,6 @@ impl OperationHandler for Manage {
                 if !observation.observed_in_this_host
                     && observation.instance.state != InstanceState::Released
                     && observation.instance.state != InstanceState::Suspended
-                    && observation.instance.purpose != PluginInstancePurpose::FixturePreview
                     && self
                         .service
                         .repository
@@ -1234,7 +906,7 @@ impl OperationHandler for Manage {
     }
     async fn execute(&self, operation: &host::Operation) -> Result<CommitPlan, HandlerError> {
         self.run(operation).await.map(CommitPlan::succeeded).map_err(|error| {
-            if matches!(self.id, "windows.update_layout" | "windows.open_view" | "views.close" | "scenarios.checkpoint" | "scenarios.apply") && matches!(&error,
+            if matches!(self.id, "views.close") && matches!(&error,
                 OperationError::ContentChanged(_) | OperationError::InvalidInput(_) | OperationError::NotFound(_)) {
                 return HandlerError::before_effect(error.to_string());
             }
@@ -1271,87 +943,6 @@ impl Manage {
         let value = &operation.normalized_arguments;
         let service = &self.service;
         match self.id {
-            "plugins.preview" => {
-                let args: PreviewPlugin = decode(value)?;
-                let _guard = service.gate.lock().await;
-                let target = service.prepare_preview(&args)?;
-                let instance = service
-                    .runtime
-                    .preview_identified(
-                        PluginActivation {
-                            revision: args.revision,
-                            artifact: args.artifact,
-                            target,
-                            project: service.project.clone(),
-                            project_root: None,
-                            principal: plugin_principal_id(bound.context.principal()),
-                            alias: args.alias,
-                            configuration: args.configuration,
-                            grants: vec![],
-                        },
-                        PluginInstanceId::new(&bound.target.identity).map_err(error)?,
-                        args.queries,
-                    )
-                    .await
-                    .map_err(error)?;
-                Ok(json!(service.observe_instance(
-                    &bound.context,
-                    &instance.identity,
-                    false
-                )?))
-            }
-            "scenarios.apply" => {
-                let _guard = service.gate.lock().await;
-                Ok(json!(
-                    service.apply_scenario(&bound.context, &decode(value)?)?
-                ))
-            }
-            "scenarios.checkpoint" => {
-                let _guard = service.gate.lock().await;
-                Ok(json!(
-                    service
-                        .repository
-                        .lock()
-                        .unwrap()
-                        .save_scenario(
-                            &service.project,
-                            &plugin_principal_id(bound.context.principal()),
-                            &decode(value)?
-                        )
-                        .map_err(scenario_error)?
-                ))
-            }
-            "windows.open_view" => {
-                let _guard = service.gate.lock().await;
-                Ok(json!(service.open_window_view(
-                    &bound.context,
-                    ViewInstanceId::new(&bound.target.identity).map_err(error)?,
-                    decode(value)?
-                )?))
-            }
-            "windows.update_layout" => {
-                let _guard = service.gate.lock().await;
-                service.check_window_context(
-                    &bound.context,
-                    &decode::<UpdatePluginWindowLayout>(value)?.window,
-                )?;
-                let record = service
-                    .repository
-                    .lock()
-                    .unwrap()
-                    .update_window_layout(
-                        &service.project,
-                        &plugin_principal_id(bound.context.principal()),
-                        decode(value)?,
-                    )
-                    .map_err(|fault| match fault {
-                        PluginError::Conflict => {
-                            OperationError::ContentChanged("window layout changed".into())
-                        }
-                        other => error(other),
-                    })?;
-                Ok(json!(record))
-            }
             "views.close" => Ok(json!(
                 service
                     .close_view_cooperatively(
@@ -1440,7 +1031,6 @@ impl Manage {
                         .map_err(error)?
                         .manifest;
                     if observation.instance.state == InstanceState::Suspended
-                        || observation.instance.purpose == PluginInstancePurpose::FixturePreview
                         || manifest.backend.is_none()
                     {
                         let references = repo.references(&args.instance.revision).map_err(error)?;

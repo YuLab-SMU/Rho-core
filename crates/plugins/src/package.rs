@@ -328,14 +328,6 @@ pub fn validate_archive(archive: &PluginArchive) -> Result<(), PluginError> {
         serde_json::from_slice::<PluginManifest>(&manifest_bytes)? == revision.manifest,
         "plugin.json disagrees with revision manifest",
     )?;
-    for (path, file) in &revision.files {
-        if path.as_str().starts_with("views/") && path.as_str().ends_with(".json") {
-            let bytes = STANDARD
-                .decode(&archive.blobs[&file.digest])
-                .map_err(|_| PluginError::Invalid("invalid visual document encoding".into()))?;
-            serde_json::from_slice::<VisualDocument>(&bytes)?.validate()?;
-        }
-    }
     Ok(())
 }
 

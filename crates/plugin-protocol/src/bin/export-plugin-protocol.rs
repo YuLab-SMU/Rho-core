@@ -67,11 +67,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     PluginViewCaller::export_all(&types)?;
     PluginViewPresence::export_all(&types)?;
     PluginViewMessage::export_all(&types)?;
-    PluginWindowLayout::export_all(&types)?;
-    PluginWindowArguments::export_all(&types)?;
-    UpdatePluginWindowLayout::export_all(&types)?;
-    OpenPluginWindowView::export_all(&types)?;
-    OpenedPluginWindowView::export_all(&types)?;
     ContextSearch::export_all(&types)?;
     ContextPage::export_all(&types)?;
     PreviewContext::export_all(&types)?;
@@ -86,21 +81,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     DocumentDraftChunk::export_all(&types)?;
     DiscardDocumentDraft::export_all(&types)?;
     RpcFrame::export_all(&types)?;
-    ScenarioRevision::export_all(&types)?;
-    SaveScenario::export_all(&types)?;
-    ListScenarios::export_all(&types)?;
-    ScenarioPage::export_all(&types)?;
-    ScenarioRevisionArguments::export_all(&types)?;
-    WindowScenario::export_all(&types)?;
-    ApplyScenario::export_all(&types)?;
-    WindowScenarioSnapshot::export_all(&types)?;
-    ResolveWindowProvider::export_all(&types)?;
     ListPluginSource::export_all(&types)?;
     PluginSourcePage::export_all(&types)?;
     ReadPluginSource::export_all(&types)?;
     PluginSourceChunk::export_all(&types)?;
-    PreviewPlugin::export_all(&types)?;
-    VisualDocument::export_all(&types)?;
     fs::create_dir_all(root.join("schema"))?;
     for (name, schema) in [
         (
@@ -119,7 +103,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "plugin-source-chunk",
             schemars::schema_for!(PluginSourceChunk),
         ),
-        ("preview-plugin", schemars::schema_for!(PreviewPlugin)),
         (
             "project-read-coverage",
             schemars::schema_for!(ProjectReadCoverage),
@@ -194,11 +177,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "view-renderer-release",
             schemars::schema_for!(PluginViewRendererRelease),
         ),
-        ("window-layout", schemars::schema_for!(PluginWindowLayout)),
-        (
-            "window-open-view",
-            schemars::schema_for!(OpenPluginWindowView),
-        ),
         ("context-search", schemars::schema_for!(ContextSearch)),
         ("context-page", schemars::schema_for!(ContextPage)),
         ("preview-context", schemars::schema_for!(PreviewContext)),
@@ -224,24 +202,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "resource-transfer-response",
             schemars::schema_for!(ResourceTransferResponse),
         ),
-        ("scenario", schemars::schema_for!(ScenarioRevision)),
-        ("apply-scenario", schemars::schema_for!(ApplyScenario)),
-        (
-            "window-scenario-snapshot",
-            schemars::schema_for!(WindowScenarioSnapshot),
-        ),
-        (
-            "resolve-window-provider",
-            schemars::schema_for!(ResolveWindowProvider),
-        ),
-        ("save-scenario", schemars::schema_for!(SaveScenario)),
-        ("list-scenarios", schemars::schema_for!(ListScenarios)),
-        ("scenario-page", schemars::schema_for!(ScenarioPage)),
-        (
-            "scenario-revision-arguments",
-            schemars::schema_for!(ScenarioRevisionArguments),
-        ),
-        ("visual-document", schemars::schema_for!(VisualDocument)),
     ] {
         fs::write(
             root.join("schema").join(format!("{name}.json")),

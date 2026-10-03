@@ -105,10 +105,6 @@ pub struct ReconnectPluginView {
 #[serde(deny_unknown_fields)]
 pub struct PluginViewRecord {
     pub view: ViewInstanceId,
-    /// Omitted for normal runtime views. Fixture mode never grants native calls.
-    #[serde(default, skip_serializing_if = "PluginInstancePurpose::is_runtime")]
-    #[ts(as = "Option<_>", optional)]
-    pub purpose: PluginInstancePurpose,
     pub instance: InstanceRef,
     pub project: ProjectId,
     pub principal: PrincipalId,

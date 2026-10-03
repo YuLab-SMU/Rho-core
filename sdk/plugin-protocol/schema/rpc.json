@@ -287,10 +287,6 @@
         "project": {
           "type": "string"
         },
-        "purpose": {
-          "description": "Omitted for normal runtime instances, preserving native initialization.",
-          "$ref": "#/$defs/PluginInstancePurpose"
-        },
         "state": {
           "$ref": "#/$defs/InstanceState"
         },
@@ -310,13 +306,6 @@
         "alias",
         "configuration",
         "state"
-      ]
-    },
-    "PluginInstancePurpose": {
-      "type": "string",
-      "enum": [
-        "runtime",
-        "fixture_preview"
       ]
     },
     "PluginOutcome": {

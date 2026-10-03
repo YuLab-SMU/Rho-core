@@ -326,9 +326,7 @@ impl PluginService {
         let guard = self.gate.lock().await;
         self.detach_live_views();
         for observation in self.runtime.observe() {
-            if observation.instance.state == InstanceState::Active
-                && observation.instance.purpose == PluginInstancePurpose::Runtime
-            {
+            if observation.instance.state == InstanceState::Active {
                 if let Err(error) = self.runtime.suspend(&observation.instance.identity).await {
                     eprintln!("plugin suspension is unconfirmed: {error}");
                 }

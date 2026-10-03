@@ -28,7 +28,11 @@ impl Drop for Session {
 impl Session {
     fn open(db: &Path, project: &Path, grants: &[&str]) -> (Self, Value) {
         let mut command = Command::new(env!("CARGO_BIN_EXE_rho"));
-        command.arg("--database").arg(db).arg("--project").arg(project);
+        command
+            .arg("--database")
+            .arg(db)
+            .arg("--project")
+            .arg(project);
         for scope in grants {
             command.arg("--grant-scope").arg(scope);
         }
@@ -41,32 +45,51 @@ impl Session {
             .unwrap();
         let input = child.stdin.take();
         let output = BufReader::new(child.stdout.take().unwrap());
-        let mut session = Self { child, input, output, serial: 0 };
+        let mut session = Self {
+            child,
+            input,
+            output,
+            serial: 0,
+        };
         let ready = session.line();
         assert_eq!(ready["type"], "ready", "{ready}");
         (session, ready)
     }
     fn line(&mut self) -> Value {
         let mut line = String::new();
-        assert!(self.output.read_line(&mut line).unwrap() > 0, "session exited");
+        assert!(
+            self.output.read_line(&mut line).unwrap() > 0,
+            "session exited"
+        );
         serde_json::from_str(&line).unwrap()
     }
     fn request(&mut self, method: &str, params: Value) -> Value {
         self.serial += 1;
         let id = format!("frame-{}", self.serial);
         let input = self.input.as_mut().expect("open session input");
-        writeln!(input, "{}", json!({"id":id,"request":{"method":method,"params":params}})).unwrap();
+        writeln!(
+            input,
+            "{}",
+            json!({"id":id,"request":{"method":method,"params":params}})
+        )
+        .unwrap();
         input.flush().unwrap();
         let reply = self.line();
         assert_eq!(reply["id"], id);
         reply
     }
     fn query(&mut self, id: &str, arguments: Value) -> Value {
-        self.request("query_snapshot", json!({"capability":{"id":id,"version":1},"arguments":arguments}))
+        self.request(
+            "query_snapshot",
+            json!({"capability":{"id":id,"version":1},"arguments":arguments}),
+        )
     }
     fn invoke(&mut self, request: &str, id: &str, arguments: Value) -> Value {
-        self.request("invoke", json!({"client_request_id":request,"capability":{"id":id,"version":1},
-            "arguments":arguments,"preconditions":[]}))
+        self.request(
+            "invoke",
+            json!({"client_request_id":request,"capability":{"id":id,"version":1},
+            "arguments":arguments,"preconditions":[]}),
+        )
     }
     /// Closing stdin is the session's normal end; accepted work drains first.
     fn close(mut self) {
@@ -76,25 +99,53 @@ impl Session {
 }
 
 #[test]
-fn ordinary_host_rejects_retired_development_work_without_recording_an_operation() {
+fn ordinary_host_rejects_retired_product_work_without_recording_an_operation() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("catalog.sqlite");
     let project = dir.path().join("project");
     fs::create_dir(&project).unwrap();
     let (mut session, ready) = Session::open(&db, &project, &[]);
     let retired = [
-        "plugins.build", "plugins.branch", "plugins.advance_branch", "plugins.checkpoint",
-        "plugins.branches", "plugins.branch_head", "plugins.check_source",
+        "plugins.build",
+        "plugins.branch",
+        "plugins.advance_branch",
+        "plugins.checkpoint",
+        "plugins.branches",
+        "plugins.branch_head",
+        "plugins.check_source",
+        "plugins.preview",
+        "windows.layout",
+        "windows.update_layout",
+        "windows.open_view",
+        "windows.scenario",
+        "windows.resolve",
+        "scenarios.list",
+        "scenarios.get",
+        "scenarios.prepare",
+        "scenarios.apply",
+        "scenarios.checkpoint",
     ];
     let capabilities = ready["capabilities"].as_array().unwrap();
     for id in retired {
-        assert!(!capabilities.iter().any(|cap| cap["capability"]["id"] == id), "{id}");
+        assert!(
+            !capabilities.iter().any(|cap| cap["capability"]["id"] == id),
+            "{id}"
+        );
         let reply = session.invoke(id, id, json!({}));
         assert_eq!(reply["ok"], false, "{reply}");
-        assert!(reply["error"].as_str().unwrap().contains("not registered"), "{reply}");
+        assert!(
+            reply["error"].as_str().unwrap().contains("not registered"),
+            "{reply}"
+        );
     }
     let records = session.query("operation.list_recent", json!({}));
-    assert!(records["result"]["data"]["operations"].as_array().unwrap().is_empty(), "{records}");
+    assert!(
+        records["result"]["data"]["operations"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{records}"
+    );
     assert!(!repository_path(&db).join("builds-v1").exists());
     session.close();
 }
@@ -117,10 +168,12 @@ fn package(path: &Path) -> PluginArchive {
     }
     fs::write(path.join("BUILD.md"), "Copy backend.py to dist/backend.").unwrap();
     fs::write(path.join("deps.lock"), "Python 3 standard library.").unwrap();
-    let query = |id: &str, input: Value, example: Value| json!({
+    let query = |id: &str, input: Value, example: Value| {
+        json!({
         "capability":{"id":id,"version":1},"kind":"query","title":id,"description":"Fixture context",
         "input_schema":input,"examples":[example],"output_schema":{"type":"object"},"recovery_schema":true,
-        "required_scopes":[DOMAIN_SCOPE],"effects":[],"cancellation":"unsupported"});
+        "required_scopes":[DOMAIN_SCOPE],"effects":[],"cancellation":"unsupported"})
+    };
     let append = json!({
         "capability":{"id":"fixture.notes.append","version":1},"kind":"operation","title":"Append",
         "description":"Append text to one exact note version",
@@ -233,25 +286,38 @@ fn observations_keep_their_time_and_limits_after_external_changes_and_uncertain_
     let dir = tempfile::tempdir().unwrap();
     let archive = package(&dir.path().join("package"));
     let db = dir.path().join("catalog.sqlite");
-    PluginRepository::open(&repository_path(&db)).unwrap().import(&archive).unwrap();
+    PluginRepository::open(&repository_path(&db))
+        .unwrap()
+        .import(&archive)
+        .unwrap();
     let project = dir.path().join("project");
     fs::create_dir(&project).unwrap();
     fs::write(project.join("external.txt"), "A 研究\n").unwrap();
     let (mut session, _) = Session::open(&db, &project, &[DOMAIN_SCOPE]);
-    let activated = session.invoke("activate", "plugins.activate", json!({"revision":archive.revision.id,
+    let activated = session.invoke(
+        "activate",
+        "plugins.activate",
+        json!({"revision":archive.revision.id,
         "artifact":archive.artifacts[0].id,"target":backend_target(),"alias":"notes",
-        "configuration":{"uncertain_note":"alpha"}}));
+        "configuration":{"uncertain_note":"alpha"}}),
+    );
     assert_eq!(activated["result"]["status"], "succeeded", "{activated}");
     let instance = activated["result"]["output"]["instance"]["identity"].clone();
     let resolve = |session: &mut Session, id: &str| {
-        let reply = session.query("plugins.resolve", json!({"instance":instance,"capability":{"id":id,"version":1}}));
+        let reply = session.query(
+            "plugins.resolve",
+            json!({"instance":instance,"capability":{"id":id,"version":1}}),
+        );
         assert_eq!(reply["ok"], true, "{reply}");
         reply["result"]["data"].clone()
     };
     let binding = resolve(&mut session, "fixture.notes.observe");
     let observe = |session: &mut Session, mode: &str| {
-        let reply = session.query("fixture.notes.observe", json!({"binding":binding,
-            "arguments":{"mode":mode},"preconditions":null}));
+        let reply = session.query(
+            "fixture.notes.observe",
+            json!({"binding":binding,
+            "arguments":{"mode":mode},"preconditions":null}),
+        );
         assert_eq!(reply["ok"], true, "{reply}");
         reply["result"].clone()
     };
@@ -266,7 +332,12 @@ fn observations_keep_their_time_and_limits_after_external_changes_and_uncertain_
     assert_eq!(cached["data"], first["data"]);
     assert_eq!(cached["status"], "ready", "cached bytes remain readable");
     assert_eq!(cached["completeness"], "partial");
-    assert!(cached["notices"].as_array().unwrap().contains(&json!("Retained bytes; disk has not been read again.")));
+    assert!(
+        cached["notices"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Retained bytes; disk has not been read again."))
+    );
     let current = observe(&mut session, "live");
     assert_eq!(current["data"]["text"], "B 🧬\n");
     assert_ne!(current["data"]["digest"], first["data"]["digest"]);
@@ -275,12 +346,18 @@ fn observations_keep_their_time_and_limits_after_external_changes_and_uncertain_
     assert_eq!(unknown["status"], "ready");
     let partial = observe(&mut session, "partial");
     assert_eq!(partial["completeness"], "partial");
-    assert_eq!(partial["notices"], json!(["Only external.txt was inspected; its producer is unknown."]));
+    assert_eq!(
+        partial["notices"],
+        json!(["Only external.txt was inspected; its producer is unknown."])
+    );
     let unavailable = observe(&mut session, "unavailable");
     assert_eq!(unavailable["status"], "unavailable");
     assert_eq!(unavailable["completeness"], "unknown");
     assert!(unavailable["observed_at_ms"].is_null());
-    assert_eq!(unavailable["notices"], json!(["No native observation is available."]));
+    assert_eq!(
+        unavailable["notices"],
+        json!(["No native observation is available."])
+    );
 
     let append = resolve(&mut session, "fixture.notes.append");
     let args = json!({"binding":append,"arguments":{"note":"alpha","expected_version":1,"text":"new\n"},"preconditions":null});
@@ -288,19 +365,34 @@ fn observations_keep_their_time_and_limits_after_external_changes_and_uncertain_
     assert_eq!(original["result"]["status"], "uncertain", "{original}");
     let id = original["result"]["operation"]["operation_id"].clone();
     let search = resolve(&mut session, "fixture.notes.search");
-    let page = session.query("fixture.notes.search", json!({"binding":search,
-        "arguments":{"text":"alpha","after":null,"limit":20},"preconditions":null}));
+    let page = session.query(
+        "fixture.notes.search",
+        json!({"binding":search,
+        "arguments":{"text":"alpha","after":null,"limit":20},"preconditions":null}),
+    );
     let reference = page["result"]["data"]["items"][0]["reference"].clone();
     assert_eq!(reference["selector"]["version"], 2);
     let preview = resolve(&mut session, "fixture.notes.preview");
-    let shown = session.query("fixture.notes.preview", json!({"binding":preview,
-        "arguments":{"reference":reference,"inclusion":{},"max_bytes":4096},"preconditions":null}));
+    let shown = session.query(
+        "fixture.notes.preview",
+        json!({"binding":preview,
+        "arguments":{"reference":reference,"inclusion":{},"max_bytes":4096},"preconditions":null}),
+    );
     assert_eq!(shown["result"]["data"]["text"], "首行 alpha\nnew\n");
     assert_eq!(shown["result"]["data"]["data"]["executions"], 1);
-    assert!(shown["result"]["observed_at_ms"].is_null(), "omitted owner time remains unknown");
+    assert!(
+        shown["result"]["observed_at_ms"].is_null(),
+        "omitted owner time remains unknown"
+    );
     // Current matching state cannot rewrite attribution or replay the old action.
-    assert_eq!(session.request("get_operation", json!({"operation_id":id}))["result"], original["result"]);
-    assert_eq!(session.invoke("uncertain", "fixture.notes.append", args)["result"], original["result"]);
+    assert_eq!(
+        session.request("get_operation", json!({"operation_id":id}))["result"],
+        original["result"]
+    );
+    assert_eq!(
+        session.invoke("uncertain", "fixture.notes.append", args)["result"],
+        original["result"]
+    );
     assert_eq!(observe(&mut session, "live")["data"], current["data"]);
     let unrelated = session.invoke("independent", "fixture.notes.append", json!({"binding":append,
         "arguments":{"note":"beta","expected_version":3,"text":"independent\n"},"preconditions":null}));
@@ -308,8 +400,14 @@ fn observations_keep_their_time_and_limits_after_external_changes_and_uncertain_
     assert_eq!(unrelated["result"]["output"]["executions"], 2);
     let recent = session.query("operation.list_recent", json!({}));
     assert_eq!(recent["ok"], true, "{recent}");
-    assert_eq!(recent["result"]["data"]["operations"].as_array().unwrap().len(), 3,
-        "only activation and the two requested actions enter the journal: {recent}");
+    assert_eq!(
+        recent["result"]["data"]["operations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3,
+        "only activation and the two requested actions enter the journal: {recent}"
+    );
     session.close();
 }
 
@@ -318,7 +416,10 @@ fn external_caller_reads_context_and_invokes_an_operation_without_a_window() {
     let dir = tempfile::tempdir().unwrap();
     let archive = package(&dir.path().join("package"));
     let db = dir.path().join("catalog.sqlite");
-    PluginRepository::open(&repository_path(&db)).unwrap().import(&archive).unwrap();
+    PluginRepository::open(&repository_path(&db))
+        .unwrap()
+        .import(&archive)
+        .unwrap();
     let project = dir.path().join("project");
     fs::create_dir(&project).unwrap();
 
@@ -328,15 +429,21 @@ fn external_caller_reads_context_and_invokes_an_operation_without_a_window() {
     assert_eq!(activated["result"]["status"], "succeeded", "{activated}");
     let instance = activated["result"]["output"]["instance"]["identity"].clone();
     let resolve = |session: &mut Session, id: &str| {
-        let reply = session.query("plugins.resolve", json!({"instance":instance,"capability":{"id":id,"version":1}}));
+        let reply = session.query(
+            "plugins.resolve",
+            json!({"instance":instance,"capability":{"id":id,"version":1}}),
+        );
         assert_eq!(reply["ok"], true, "{reply}");
         reply["result"]["data"].clone()
     };
 
     // Discover the contribution, then search without naming a window.
     let search = resolve(&mut session, "fixture.notes.search");
-    let page = session.query("fixture.notes.search", json!({"binding":search,
-        "arguments":{"text":"","after":null,"limit":20},"preconditions":null}));
+    let page = session.query(
+        "fixture.notes.search",
+        json!({"binding":search,
+        "arguments":{"text":"","after":null,"limit":20},"preconditions":null}),
+    );
     assert_eq!(page["ok"], true, "{page}");
     let items = page["result"]["data"]["items"].as_array().unwrap().clone();
     assert_eq!(items.len(), 2);
@@ -345,8 +452,10 @@ fn external_caller_reads_context_and_invokes_an_operation_without_a_window() {
     assert!(alpha.get("window").is_none(), "{alpha}");
 
     let preview_binding = resolve(&mut session, "fixture.notes.preview");
-    let preview = |session: &mut Session, reference: &Value| session.query("fixture.notes.preview",
-        json!({"binding":preview_binding,"arguments":{"reference":reference,"inclusion":{},"max_bytes":4096},"preconditions":null}));
+    let preview = |session: &mut Session, reference: &Value| {
+        session.query("fixture.notes.preview",
+        json!({"binding":preview_binding,"arguments":{"reference":reference,"inclusion":{},"max_bytes":4096},"preconditions":null}))
+    };
     let shown = preview(&mut session, &alpha);
     assert_eq!(shown["result"]["data"]["text"], "首行 alpha\n", "{shown}");
 
@@ -366,12 +475,18 @@ fn external_caller_reads_context_and_invokes_an_operation_without_a_window() {
     assert_eq!(retained["result"], original["result"]);
     let retry = session.invoke("append-once", "fixture.notes.append", arguments.clone());
     assert_eq!(retry["result"]["operation"]["operation_id"], operation_id);
-    assert_eq!(retry["result"]["output"]["executions"], 1, "retry must not execute again");
+    assert_eq!(
+        retry["result"]["output"]["executions"], 1,
+        "retry must not execute again"
+    );
 
     // The old reference no longer matches the owner's version evidence.
     assert_eq!(preview(&mut session, &alpha)["ok"], false);
-    let current = session.query("fixture.notes.search", json!({"binding":search,
-        "arguments":{"text":"alpha","after":null,"limit":20},"preconditions":null}));
+    let current = session.query(
+        "fixture.notes.search",
+        json!({"binding":search,
+        "arguments":{"text":"alpha","after":null,"limit":20},"preconditions":null}),
+    );
     let fresh = current["result"]["data"]["items"][0]["reference"].clone();
     let updated = preview(&mut session, &fresh);
     assert_eq!(updated["result"]["data"]["text"], "首行 alpha\n第二行\n");
@@ -388,22 +503,36 @@ fn domain_scopes_come_only_from_the_trusted_launcher() {
     let dir = tempfile::tempdir().unwrap();
     let archive = package(&dir.path().join("package"));
     let db = dir.path().join("catalog.sqlite");
-    PluginRepository::open(&repository_path(&db)).unwrap().import(&archive).unwrap();
+    PluginRepository::open(&repository_path(&db))
+        .unwrap()
+        .import(&archive)
+        .unwrap();
     let project = dir.path().join("project");
     fs::create_dir(&project).unwrap();
 
     // Default local authority covers generic Core work but no domain scope.
     let (mut session, ready) = Session::open(&db, &project, &[]);
     let generic = ready["capabilities"].as_array().unwrap();
-    assert!(generic.iter().any(|d| d["capability"]["id"] == "plugins.activate"));
+    assert!(
+        generic
+            .iter()
+            .any(|d| d["capability"]["id"] == "plugins.activate")
+    );
     let activated = session.invoke("activate", "plugins.activate", json!({"revision":archive.revision.id,
         "artifact":archive.artifacts[0].id,"target":backend_target(),"alias":"notes","configuration":{}}));
     assert_eq!(activated["result"]["status"], "succeeded", "{activated}");
     let instance = activated["result"]["output"]["instance"]["identity"].clone();
-    let binding = session.query("plugins.resolve", json!({"instance":instance,"capability":{"id":"fixture.notes.append","version":1}}));
+    let binding = session.query(
+        "plugins.resolve",
+        json!({"instance":instance,"capability":{"id":"fixture.notes.append","version":1}}),
+    );
     let binding = binding["result"]["data"].clone();
-    let denied = session.invoke("append", "fixture.notes.append", json!({"binding":binding,
-        "arguments":{"note":"alpha","expected_version":1,"text":"x"},"preconditions":null}));
+    let denied = session.invoke(
+        "append",
+        "fixture.notes.append",
+        json!({"binding":binding,
+        "arguments":{"note":"alpha","expected_version":1,"text":"x"},"preconditions":null}),
+    );
     assert_eq!(denied["ok"], false, "{denied}");
     assert_eq!(denied["diagnostic"]["code"], "access_denied", "{denied}");
     // Request bodies cannot add authority.
@@ -422,23 +551,38 @@ fn domain_scopes_come_only_from_the_trusted_launcher() {
         "artifact":archive.artifacts[0].id,"target":backend_target(),"alias":"notes-granted","configuration":{}}));
     assert_eq!(activated["result"]["status"], "succeeded", "{activated}");
     let instance = activated["result"]["output"]["instance"]["identity"].clone();
-    let binding = granted.query("plugins.resolve", json!({"instance":instance,"capability":{"id":"fixture.notes.append","version":1}}));
+    let binding = granted.query(
+        "plugins.resolve",
+        json!({"instance":instance,"capability":{"id":"fixture.notes.append","version":1}}),
+    );
     let binding = binding["result"]["data"].clone();
-    let admitted = granted.invoke("append", "fixture.notes.append", json!({"binding":binding,
-        "arguments":{"note":"alpha","expected_version":1,"text":"x"},"preconditions":null}));
+    let admitted = granted.invoke(
+        "append",
+        "fixture.notes.append",
+        json!({"binding":binding,
+        "arguments":{"note":"alpha","expected_version":1,"text":"x"},"preconditions":null}),
+    );
     assert_eq!(admitted["result"]["status"], "succeeded", "{admitted}");
     assert_eq!(admitted["result"]["output"]["executions"], 1);
     // The owner receives the trusted caller scopes, now including the launcher grant.
     let scopes = admitted["result"]["output"]["scopes"].as_array().unwrap();
     assert!(scopes.contains(&json!(DOMAIN_SCOPE)), "{admitted}");
-    assert!(!scopes.iter().any(|scope| scope == "workspace.run_r"), "{admitted}");
+    assert!(
+        !scopes.iter().any(|scope| scope == "workspace.run_r"),
+        "{admitted}"
+    );
     granted.close();
 
     // Invalid scope tokens are rejected before a Host opens.
     let refused = Command::new(env!("CARGO_BIN_EXE_rho"))
-        .args(["--database"]).arg(&db).arg("--project").arg(&project)
+        .args(["--database"])
+        .arg(&db)
+        .arg("--project")
+        .arg(&project)
         .args(["--grant-scope", "not a scope", "session"])
-        .stdin(Stdio::null()).output().unwrap();
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
     assert!(!refused.status.success());
 }
 
@@ -458,16 +602,36 @@ impl Drop for Mcp {
 impl Mcp {
     fn open(db: &Path, project: &Path, grants: &[&str]) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_rho"));
-        command.arg("--database").arg(db).arg("--project").arg(project);
+        command
+            .arg("--database")
+            .arg(db)
+            .arg("--project")
+            .arg(project);
         for scope in grants {
             command.arg("--grant-scope").arg(scope);
         }
-        let mut child = command.arg("mcp").stdin(Stdio::piped()).stdout(Stdio::piped())
-            .stderr(Stdio::inherit()).spawn().unwrap();
-        let mut mcp = Self { input: child.stdin.take(), output: BufReader::new(child.stdout.take().unwrap()), child, serial: 0 };
-        let initialized = mcp.call("initialize", json!({"protocolVersion":"2025-06-18","capabilities":{},
-            "clientInfo":{"name":"headless-test","version":"1"}}));
-        assert!(initialized["result"]["serverInfo"].is_object(), "{initialized}");
+        let mut child = command
+            .arg("mcp")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let mut mcp = Self {
+            input: child.stdin.take(),
+            output: BufReader::new(child.stdout.take().unwrap()),
+            child,
+            serial: 0,
+        };
+        let initialized = mcp.call(
+            "initialize",
+            json!({"protocolVersion":"2025-06-18","capabilities":{},
+            "clientInfo":{"name":"headless-test","version":"1"}}),
+        );
+        assert!(
+            initialized["result"]["serverInfo"].is_object(),
+            "{initialized}"
+        );
         mcp.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
         mcp
     }
@@ -482,7 +646,10 @@ impl Mcp {
         self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}));
         loop {
             let mut line = String::new();
-            assert!(self.output.read_line(&mut line).unwrap() > 0, "MCP server exited");
+            assert!(
+                self.output.read_line(&mut line).unwrap() > 0,
+                "MCP server exited"
+            );
             let message: Value = serde_json::from_str(&line).unwrap();
             // Skip server notifications such as tools/list_changed.
             if message["id"] == json!(id) {
@@ -494,10 +661,19 @@ impl Mcp {
         let mut names = vec![];
         let mut cursor = Value::Null;
         loop {
-            let params = if cursor.is_null() { json!({}) } else { json!({"cursor":cursor}) };
+            let params = if cursor.is_null() {
+                json!({})
+            } else {
+                json!({"cursor":cursor})
+            };
             let page = self.call("tools/list", params);
-            names.extend(page["result"]["tools"].as_array().unwrap().iter()
-                .map(|tool| tool["name"].as_str().unwrap().to_owned()));
+            names.extend(
+                page["result"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|tool| tool["name"].as_str().unwrap().to_owned()),
+            );
             cursor = page["result"]["nextCursor"].clone();
             if cursor.is_null() {
                 return names;
@@ -524,69 +700,142 @@ fn external_mcp_client_discovers_and_calls_the_same_headless_capabilities() {
     let dir = tempfile::tempdir().unwrap();
     let archive = package(&dir.path().join("package"));
     let db = dir.path().join("catalog.sqlite");
-    PluginRepository::open(&repository_path(&db)).unwrap().import(&archive).unwrap();
+    PluginRepository::open(&repository_path(&db))
+        .unwrap()
+        .import(&archive)
+        .unwrap();
     let project = dir.path().join("project");
     fs::create_dir(&project).unwrap();
     fs::write(project.join("external.txt"), "MCP observation 🧬\n").unwrap();
 
     // Without a launcher grant the domain tools are not offered.
     let mut ungranted = Mcp::open(&db, &project, &[]);
-    let activated = ungranted.tool("rho.plugins.activate.v1", json!({"client_request_id":"activate",
+    let activated = ungranted
+        .tool(
+            "rho.plugins.activate.v1",
+            json!({"client_request_id":"activate",
         "arguments":{"revision":archive.revision.id,"artifact":archive.artifacts[0].id,
-        "target":backend_target(),"alias":"notes","configuration":{}}})).unwrap();
+        "target":backend_target(),"alias":"notes","configuration":{}}}),
+        )
+        .unwrap();
     assert_eq!(activated["status"], "succeeded", "{activated}");
     let tools = ungranted.tools();
     assert!(tools.iter().any(|name| name == "rho.plugins.resolve.v1"));
-    assert!(!tools.iter().any(|name| name.starts_with("rho.fixture.notes")), "{tools:?}");
-    assert!(ungranted.tool("rho.fixture.notes.search.v1", json!({})).is_err());
+    assert!(
+        !tools
+            .iter()
+            .any(|name| name.starts_with("rho.fixture.notes")),
+        "{tools:?}"
+    );
+    assert!(
+        ungranted
+            .tool("rho.fixture.notes.search.v1", json!({}))
+            .is_err()
+    );
     ungranted.close();
 
     let mut mcp = Mcp::open(&db, &project, &[DOMAIN_SCOPE]);
-    let activated = mcp.tool("rho.plugins.activate.v1", json!({"client_request_id":"activate-granted",
+    let activated = mcp
+        .tool(
+            "rho.plugins.activate.v1",
+            json!({"client_request_id":"activate-granted",
         "arguments":{"revision":archive.revision.id,"artifact":archive.artifacts[0].id,
-        "target":backend_target(),"alias":"notes-mcp","configuration":{}}})).unwrap();
+        "target":backend_target(),"alias":"notes-mcp","configuration":{}}}),
+        )
+        .unwrap();
     assert_eq!(activated["status"], "succeeded", "{activated}");
     let instance = activated["output"]["instance"]["identity"].clone();
     let tools = mcp.tools();
-    for name in ["rho.fixture.notes.search.v1", "rho.fixture.notes.preview.v1", "rho.fixture.notes.append.v1"] {
-        assert!(tools.iter().any(|tool| tool == name), "{name} missing from {tools:?}");
+    for name in [
+        "rho.fixture.notes.search.v1",
+        "rho.fixture.notes.preview.v1",
+        "rho.fixture.notes.append.v1",
+    ] {
+        assert!(
+            tools.iter().any(|tool| tool == name),
+            "{name} missing from {tools:?}"
+        );
     }
-    let resolve = |mcp: &mut Mcp, id: &str| mcp.tool("rho.plugins.resolve.v1",
-        json!({"instance":instance,"capability":{"id":id,"version":1}})).unwrap()["data"].clone();
+    let resolve = |mcp: &mut Mcp, id: &str| {
+        mcp.tool(
+            "rho.plugins.resolve.v1",
+            json!({"instance":instance,"capability":{"id":id,"version":1}}),
+        )
+        .unwrap()["data"]
+            .clone()
+    };
     let observation = resolve(&mut mcp, "fixture.notes.observe");
-    let live = mcp.tool("rho.fixture.notes.observe.v1", json!({"binding":observation,
-        "arguments":{"mode":"live"},"preconditions":null})).unwrap();
-    let cached = mcp.tool("rho.fixture.notes.observe.v1", json!({"binding":observation,
-        "arguments":{"mode":"cached"},"preconditions":null})).unwrap();
+    let live = mcp
+        .tool(
+            "rho.fixture.notes.observe.v1",
+            json!({"binding":observation,
+        "arguments":{"mode":"live"},"preconditions":null}),
+        )
+        .unwrap();
+    let cached = mcp
+        .tool(
+            "rho.fixture.notes.observe.v1",
+            json!({"binding":observation,
+        "arguments":{"mode":"cached"},"preconditions":null}),
+        )
+        .unwrap();
     assert!(live["observed_at_ms"].is_i64());
     assert_eq!(cached["observed_at_ms"], live["observed_at_ms"]);
     assert_eq!(cached["status"], "ready");
-    assert_eq!(cached["notices"][0], "Retained bytes; disk has not been read again.");
-    let unknown = mcp.tool("rho.fixture.notes.observe.v1", json!({"binding":observation,
-        "arguments":{"mode":"unknown_time"},"preconditions":null})).unwrap();
+    assert_eq!(
+        cached["notices"][0],
+        "Retained bytes; disk has not been read again."
+    );
+    let unknown = mcp
+        .tool(
+            "rho.fixture.notes.observe.v1",
+            json!({"binding":observation,
+        "arguments":{"mode":"unknown_time"},"preconditions":null}),
+        )
+        .unwrap();
     assert!(unknown["observed_at_ms"].is_null());
     let search = resolve(&mut mcp, "fixture.notes.search");
-    let page = mcp.tool("rho.fixture.notes.search.v1", json!({"binding":search,
-        "arguments":{"text":"beta","after":null,"limit":20},"preconditions":null})).unwrap();
+    let page = mcp
+        .tool(
+            "rho.fixture.notes.search.v1",
+            json!({"binding":search,
+        "arguments":{"text":"beta","after":null,"limit":20},"preconditions":null}),
+        )
+        .unwrap();
     let beta = page["data"]["items"][0]["reference"].clone();
     assert_eq!(beta["selector"], json!({"note":"beta","version":3}));
     assert!(beta.get("window").is_none());
     let preview = resolve(&mut mcp, "fixture.notes.preview");
-    let shown = mcp.tool("rho.fixture.notes.preview.v1", json!({"binding":preview,
-        "arguments":{"reference":beta,"inclusion":{},"max_bytes":4096},"preconditions":null})).unwrap();
+    let shown = mcp
+        .tool(
+            "rho.fixture.notes.preview.v1",
+            json!({"binding":preview,
+        "arguments":{"reference":beta,"inclusion":{},"max_bytes":4096},"preconditions":null}),
+        )
+        .unwrap();
     assert_eq!(shown["data"]["text"], "beta 🧬\n");
 
     let append = resolve(&mut mcp, "fixture.notes.append");
     let call = json!({"client_request_id":"mcp-append","arguments":{"binding":append,
         "arguments":{"note":"beta","expected_version":3,"text":"MCP\n"},"preconditions":null}});
-    let original = mcp.tool("rho.fixture.notes.append.v1", call.clone()).unwrap();
+    let original = mcp
+        .tool("rho.fixture.notes.append.v1", call.clone())
+        .unwrap();
     assert_eq!(original["status"], "succeeded", "{original}");
     assert_eq!(original["operation"]["caller"]["kind"], "agent");
     let operation_id = original["operation"]["operation_id"].clone();
-    let retained = mcp.tool("rho.operation.get.v1", json!({"operation_id":operation_id})).unwrap();
-    assert_eq!(retained["data"]["record"]["status"], "succeeded", "{retained}");
+    let retained = mcp
+        .tool("rho.operation.get.v1", json!({"operation_id":operation_id}))
+        .unwrap();
+    assert_eq!(
+        retained["data"]["record"]["status"], "succeeded",
+        "{retained}"
+    );
     let retry = mcp.tool("rho.fixture.notes.append.v1", call).unwrap();
     assert_eq!(retry["operation"]["operation_id"], operation_id);
-    assert_eq!(retry["output"]["executions"], 1, "retry must not execute again");
+    assert_eq!(
+        retry["output"]["executions"], 1,
+        "retry must not execute again"
+    );
     mcp.close();
 }

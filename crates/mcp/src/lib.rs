@@ -714,17 +714,19 @@ mod port_contract_tests {
     }
     #[tokio::test]
     async fn generic_aliases_and_versioned_routes_share_original_records_and_visibility() {
-        let (_directory, host) = host().await;
+        let (directory, host) = host().await;
+        let activation = ui_package::install(
+            &directory.path().join("state.sqlite"),
+            &directory.path().join("package"),
+        );
         let edge = McpEdge::local(host.clone(), &LocalGrants::default()).unwrap();
-        let args = json!({"client_request_id":"once","arguments":{"scenario":"mcp","expected_head":null,"name":"MCP","instances":{},"providers":[],"layout":{"kind":"empty"}}});
-        let record = call(&edge, "rho.scenarios.checkpoint.v1", args.clone())
+        let args = json!({"client_request_id":"once","arguments":activation});
+        let record = call(&edge, "rho.plugins.activate.v1", args.clone())
             .await
             .unwrap();
         assert_eq!(record["status"], "succeeded");
         assert_eq!(
-            call(&edge, "rho.scenarios.checkpoint.v1", args)
-                .await
-                .unwrap(),
+            call(&edge, "rho.plugins.activate.v1", args).await.unwrap(),
             record
         );
         let get = json!({"operation_id":record["operation"]["operation_id"]});
@@ -752,3 +754,7 @@ mod port_contract_tests {
         assert!(edge.get_tool("rho.workspace.respond_input").is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "../../plugins/tests/fixtures/ui_package.rs"]
+mod ui_package;

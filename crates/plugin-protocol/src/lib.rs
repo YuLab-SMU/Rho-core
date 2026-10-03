@@ -3,8 +3,6 @@
 
 mod archive;
 pub use archive::*;
-mod preview;
-pub use preview::*;
 mod process;
 pub use process::*;
 mod identity;
@@ -16,12 +14,8 @@ mod runtime;
 pub use host_capability::*;
 mod resources;
 pub use resources::*;
-mod scenario;
 mod view;
-mod visual;
 pub use view::*;
-mod window;
-pub use window::*;
 mod context;
 pub use context::*;
 mod draft;
@@ -32,8 +26,6 @@ pub use source::*;
 pub use identity::*;
 pub use manifest::*;
 pub use runtime::*;
-pub use scenario::*;
-pub use visual::*;
 
 /// Breaking changes require a different protocol, never a source-based bypass.
 pub const PLUGIN_PROTOCOL_VERSION: u32 = 1;
@@ -41,7 +33,6 @@ pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 pub const MAX_MANIFEST_BYTES: usize = 256 * 1024;
 pub const MAX_PACKAGE_FILES: usize = 8192;
 pub const MAX_PACKAGE_BYTES: u64 = 256 * 1024 * 1024;
-pub const MAX_VISUAL_NODES: usize = 4096;
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 #[error("invalid plugin contract: {0}")]

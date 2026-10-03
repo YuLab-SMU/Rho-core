@@ -13,7 +13,7 @@ it does not establish every external action or the truth of a scientific claim.
 | [operation](../crates/operation/src/lib.rs) | Registry, admission, idempotency, execution, cancellation and retained-result commit reconciliation. |
 | [adapters/sqlite](../crates/adapters/sqlite/src/lib.rs) | Journal persistence and scoped record reads. Application settings have a separate store in this adapter. |
 | [host](../crates/host/src/lib.rs) | Project ownership, launcher authority, composition and shared public calls. |
-| [plugins](../crates/plugins/src/lib.rs) | Package containment, provider registration, native instances, resources and restricted views. Remaining development and presentation responsibilities are listed below. |
+| [plugins](../crates/plugins/src/lib.rs) | Package containment, provider registration, native instances, resources and restricted views. Remaining draft responsibilities are listed below. |
 | [plugin-protocol](../crates/plugin-protocol/src/lib.rs) | Wire contracts between Core and native owners. |
 | [plugin-sdk](../crates/plugin-sdk/README.md) | Public backend transport helpers; no Host or journal dependency. |
 | [process-engine](../crates/process-engine/README.md) | Bounded process supervision shared by native callers. |
@@ -69,8 +69,8 @@ Later owner observations can improve understanding without rewriting that record
 ## Remaining responsibility cuts
 
 Test-project orchestration, source branches, checkpoints and build execution have
-left Core. Development preview, scenarios, layout, visual models and edit drafts
-still have implementations in Core's plugin infrastructure. Their removal is
+left Core. Development preview, scenarios, layouts and visual models have also
+been removed. Edit drafts and saved view state remain in Core's plugin infrastructure. Their removal is
 separate work governed by
 [responsibility transfer requirements](RESPONSIBILITY-TRANSFER.md). Splitting Host
 modules does not claim these capabilities have moved or that consumers are integrated.

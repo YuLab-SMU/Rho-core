@@ -1,3 +1,5 @@
+#[path = "../../plugins/tests/fixtures/ui_package.rs"]
+mod ui_package;
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -19,16 +21,20 @@ fn read(reader: &mut impl BufRead) -> Value {
     );
     serde_json::from_str(&line).unwrap()
 }
-fn invocation(frame_id: &str) -> Value {
+fn invocation(frame_id: &str, activation: &Value) -> Value {
+    let mut activation = activation.clone();
+    activation["alias"] = json!(frame_id);
     json!({"id":frame_id, "request":{"method":"invoke", "params":{
-        "client_request_id":frame_id, "capability":{"id":"scenarios.checkpoint","version":1},
-        "arguments":{"scenario":frame_id,"expected_head":null,"name":frame_id,"instances":{},"providers":[],"layout":{"kind":"empty"}}
+        "client_request_id":frame_id, "capability":{"id":"plugins.activate","version":1},
+        "arguments":activation
     }}})
 }
 
 #[test]
 fn one_session_handles_pipelined_frames_and_queries_with_one_plugin_host() {
     let dir = tempfile::tempdir().unwrap();
+    let activation =
+        ui_package::install(&dir.path().join("next.sqlite"), &dir.path().join("package"));
     let mut child = ChildGuard(
         Command::new(env!("CARGO_BIN_EXE_rho"))
             .arg("--project")
@@ -52,14 +58,18 @@ fn one_session_handles_pipelined_frames_and_queries_with_one_plugin_host() {
             && descriptor["kind"] == "query"
     ));
     assert!(
-        capabilities
-            .iter()
-            .any(
-                |descriptor| descriptor["capability"]["id"] == "scenarios.checkpoint"
-                    && descriptor["kind"] == "operation"
-            )
+        capabilities.iter().any(
+            |descriptor| descriptor["capability"]["id"] == "plugins.activate"
+                && descriptor["kind"] == "operation"
+        )
     );
-    write!(input, "{}\n{}\n", invocation("one"), invocation("two")).unwrap();
+    write!(
+        input,
+        "{}\n{}\n",
+        invocation("one", &activation),
+        invocation("two", &activation)
+    )
+    .unwrap();
     input.flush().unwrap();
     let a = read(&mut output);
     let b = read(&mut output);

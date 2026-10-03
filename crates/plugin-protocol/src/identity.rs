@@ -120,7 +120,6 @@ identity!(InstanceAlias, name);
 identity!(ContentDigest, digest);
 identity!(RevisionId, digest);
 identity!(ArtifactId, digest);
-identity!(ScenarioRevisionId, digest);
 identity!(PluginInstanceId, opaque);
 identity!(ViewInstanceId, opaque);
 identity!(DraftId, opaque);
@@ -129,10 +128,8 @@ identity!(RequestId, opaque);
 identity!(ProjectId, opaque);
 identity!(PrincipalId, opaque);
 identity!(WindowId, opaque);
-identity!(ScenarioId, opaque);
 identity!(ResourceId, opaque);
 identity!(ArchiveId, opaque);
-identity!(NodeId, opaque);
 identity!(PackagePath, package_path);
 
 impl PackagePath {
