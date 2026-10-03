@@ -1,6 +1,13 @@
 //! Query-only journal composition. Uses the shared gateway without opening
 //! a writer, creating a journal, recovering operations, or starting native runtimes.
-use super::*;
+use crate::{OperationError, discovery, port_contracts};
+use rho_contract::{CallContext, CapabilityDescriptor, QueryRequest, QuerySnapshot};
+use rho_operation::{
+    CapabilityRegistry, OperationGateway, OperationJournal, QueryGateway, SystemClock,
+    UuidOperationIdGenerator,
+};
+use rho_sqlite::SqliteOperationJournal;
+use std::{path::Path, sync::Arc};
 
 /// A standalone observer has no invoke/control API and owns no scientific lease.
 pub struct QueryObserver {

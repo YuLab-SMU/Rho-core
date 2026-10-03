@@ -23,7 +23,7 @@ pub(crate) fn control_request(
     context: &CallContext,
     request: ControlRequest,
 ) -> Result<HostRequest, OperationError> {
-    if request.capability.version != 1 || !matches!(request.capability.id.as_str(), RECONCILE) {
+    if request.capability.version != 1 || request.capability.id != RECONCILE {
         return Ok(HostRequest::Control(request));
     }
     registry
@@ -37,12 +37,9 @@ pub(crate) fn control_request(
     let invalid = |_| {
         OperationError::InvalidInput("Control arguments violate their contract (redacted)".into())
     };
-    Ok(match request.capability.id.as_str() {
-        RECONCILE => HostRequest::ReconcileCommit(
-            serde_json::from_value(request.arguments).map_err(invalid)?,
-        ),
-        _ => unreachable!(),
-    })
+    Ok(HostRequest::ReconcileCommit(
+        serde_json::from_value(request.arguments).map_err(invalid)?,
+    ))
 }
 
 /// The cancellation port requires the selected operation's original authority,

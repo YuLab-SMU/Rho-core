@@ -5,6 +5,9 @@ CLI, HTTP and MCP edges. Scientific implementations live in
 [Rho-plugins](https://github.com/YuLab-SMU/Rho-plugins); the application shell and
 product assembly live in [Rho](https://github.com/YuLab-SMU/Rho).
 
+The [architecture and code navigation](docs/ARCHITECTURE.md) describes crate
+ownership, Host entry points and the shared execution lifetime.
+
 The [responsibility transfer requirements](docs/RESPONSIBILITY-TRANSFER.md) name
 the owners of development, presentation and draft capabilities leaving Core.
 Development test-project orchestration has been removed; the other cuts remain

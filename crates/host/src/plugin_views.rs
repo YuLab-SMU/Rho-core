@@ -1,6 +1,6 @@
 //! Browser transport delegates through the same Host ports as CLI and MCP.
-use crate::*;
-use rho_contract::{CapabilityRef, HostRequest, QueryRequest};
+use crate::{NextHost, OperationError};
+use rho_contract::{CallContext, CapabilityRef, HostRequest, Invocation, QueryRequest};
 use rho_plugin_protocol::*;
 use serde_json::{Value, json};
 
