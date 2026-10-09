@@ -126,6 +126,18 @@ relationships. The external caller owns goals, prompts, plans, graph layout,
 branch policy and scientific claims. Human and Agent callers use the same boundary;
 Core does not create two behavior models.
 
+The concrete mapping is intentionally small:
+
+| Lens | Existing Core contracts and entry points | What the lens adds to their design | What remains outside Core |
+| --- | --- | --- | --- |
+| Skill | `CapabilityDescriptor`/`CapabilityDocumentation`, `host.overview`, `host.catalog`, `host.describe`, `QuerySnapshot`, `ContextSearch` and `ContextPreview` | Each information module can disclose a short affordance first, then its schema, conditions, effects, limits and related reads | Skill files, loading policy, selection, SOP execution and model context management |
+| Loop | `QueryGateway`, `OperationGateway`, `Control`, `OperationStatus`, Host task tracking, event cursors and `operation.reconcile_commit` | A person or Agent can observe, act, receive a bounded result, locate the original action and choose a concrete continuation without replay being inferred | Goals, prompts, plans, messages, branch policy, stopping decisions and scientific interpretation |
+| Graph | `CallContext` IDs, `Operation` IDs and declared relationships, `OperationEventRecord`, `NextRead`, `ContextReference`, recent-record reads | Explicit identity, declared causation/correlation, event position and owner references can support a bounded local behavior view | Graph nodes/edges as runtime state, layout, reducers, scheduling, checkpoints and inferred causality |
+
+These are not three parallel state stores. One `OperationRecord` can carry its
+progressive documentation, continuation material and relationship anchors at once;
+the journal remains the single record of what Core accepted and settled.
+
 The current [recent-record arguments](../crates/contract/src/observations.rs) allow
 paging, an exact OperationId or a caller request ID. They do not expose correlation
 or causation filters. Such navigation remains a candidate in the mission plan,
