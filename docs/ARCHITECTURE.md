@@ -93,17 +93,20 @@ judgment of whether a result is usable or an experiment should be repeated.
 
 ## Agent-facing entry points
 
-Core serves external agent runtimes without owning their cognitive lifecycle.
-Skills, loops and graph orchestration are useful ways to examine these interfaces;
-they are not Core subsystems or a claim of integration with a particular framework.
+Core serves researchers and external agents by shaping its information and behavior
+for progressive disclosure, continuation and explicit navigation. Skills, loops and
+graphs are therefore design lenses inside the existing modules, not a separate agent
+runtime or a claim of integration with a particular framework. Loop and Graph also
+describe how Core manages observable behavior boundaries for people and agents;
+they are not merely compatibility features.
 
 | Caller behavior | Existing entry points and source | Boundary |
 | --- | --- | --- |
-| Discover | `host.overview`, `host.catalog`, `host.describe`; [discovery](../crates/host/src/discovery.rs), [capability documentation](../crates/contract/src/discovery.rs) | Summary and detail can be read progressively. A known capability can be called directly; discovery is not skill selection or a mandatory invocation sequence. |
-| Observe | QueryGateway and QuerySnapshot; [query](../crates/operation/src/query.rs), [snapshot](../crates/contract/src/query.rs), [context references](../crates/plugin-protocol/src/context.rs) | Observations retain owner time, source, completeness and notices. Context search/preview preserve the original owner selector; they do not assemble a complete world model. |
-| Act | Operation and specific Control ports; [ports](../crates/host/src/ports.rs), [control](../crates/operation/src/control.rs) | Perform a chosen request with concrete execution conditions. Core does not select experiments or decide scientific value. |
-| Relate | Original records and explicit call-context labels; [record reads](../crates/operation/src/record.rs), [CallContext and Operation](../crates/contract/src/lib.rs) | Correlation, causation and trace labels retain declared request relationships, not verified scientific causality or a full dependency graph. |
-| Continue | Original-record reads, event cursors, cancellation and retained-report reconciliation; [port contracts](../crates/host/src/port_contracts.rs), [commit recovery](../crates/operation/src/commit_recovery.rs) | Continue observing or perform a concrete chosen control action. An Uncertain record does not trigger replay; native attachment and reruns remain separate owner actions. |
+| Discover | `host.overview`, `host.catalog`, `host.describe`; [discovery](../crates/host/src/discovery.rs), [capability documentation](../crates/contract/src/discovery.rs) | Skill-shaped disclosure: purpose and owner first, then schema, preconditions, effects, retry/cancellation and examples. A known capability can be called directly; the views are not a mandatory sequence. |
+| Observe | QueryGateway and QuerySnapshot; [query](../crates/operation/src/query.rs), [snapshot](../crates/contract/src/query.rs), [context references](../crates/plugin-protocol/src/context.rs) | Skill-shaped observation: target, source, range, completeness, notices and next reads. Loop continuation can use a new query; Context references preserve owner identity without making a world model. |
+| Act | Operation and specific Control ports; [ports](../crates/host/src/ports.rs), [control](../crates/operation/src/control.rs) | Loop action: a chosen request is admitted, bound to an owner, executed under native conditions and returned with its known outcome. Core does not select experiments or decide scientific value. |
+| Relate | Original records and explicit call-context labels; [record reads](../crates/operation/src/record.rs), [CallContext and Operation](../crates/contract/src/lib.rs) | Graph anchors: operation IDs, request IDs, correlation, causation and native references preserve declared relationships. They do not establish verified scientific causality or a full dependency graph. |
+| Continue | Original-record reads, event cursors, cancellation and retained-report reconciliation; [port contracts](../crates/host/src/port_contracts.rs), [commit recovery](../crates/operation/src/commit_recovery.rs) | Loop continuation: `next_reads`, event positions, cancellation and retained reports expose concrete next actions. `Uncertain` does not trigger replay; native attachment and reruns remain separate owner actions. |
 
 These are descriptions of existing behavior, not five new API kinds. A Context
 View is the caller's scoped assembly of selected observations and records, with
@@ -111,6 +114,17 @@ their separate times and limits. It is not a materialized Core context package.
 Core propagates limitations; scientific methods and callers assess their effect
 on a particular use or claim. No general browse/analyze/publish permission matrix
 is inferred from missing provenance.
+
+The same record can be read through three lenses. Its documentation is the
+progressive-disclosure surface for a Skill-shaped information module; its status,
+outcome, `next_reads` and event cursor are the continuation points of a Loop; its
+explicit IDs and declared references are the anchors of a local behavior Graph.
+These lenses share existing contracts and do not introduce a second state machine.
+Core therefore manages caller/connection context, operation admission and lifetime,
+native cancellation and commit boundaries, retained reports and explicit record
+relationships. The external caller owns goals, prompts, plans, graph layout,
+branch policy and scientific claims. Human and Agent callers use the same boundary;
+Core does not create two behavior models.
 
 The current [recent-record arguments](../crates/contract/src/observations.rs) allow
 paging, an exact OperationId or a caller request ID. They do not expose correlation
@@ -121,9 +135,11 @@ support does not justify replacing it with a dependency engine.
 
 Plans, messages, todo lists, graph state, graph checkpoints, handoff policy and
 tool selection belong to the external runtime. Core references and journal events
-must not turn that runtime state into project truth. Permission-system design
-remains deferred as specified by the mission plan; existing checks described here
-are implementation facts rather than authorization to expand that system.
+must not turn that runtime state into project truth. Core does retain the explicit
+record relationships and continuation material needed for a bounded local view;
+it does not infer edges from similarity or run the external graph. Permission-system
+design remains deferred as specified by the mission plan; existing checks described
+here are implementation facts rather than authorization to expand that system.
 
 ## Responsibility boundary after the breaking upgrade
 

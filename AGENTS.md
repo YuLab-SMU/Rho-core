@@ -23,13 +23,17 @@ scientific meaning. Permission-system construction is deferred by the mission
 plan. Every new mandatory check, record or state must prevent a concrete loss;
 reuse native tools and handles before adding shared machinery.
 
-Use Skills, Loop and Graph as questions about discovery, interaction and explicit
-record relationships, not as modules or a mandatory combined test suite. Context
-views belong to the caller. Treat causation/correlation labels as declared request
-relationships, not scientific proof or a dependency graph. Propagate observation
-limits; do not infer a general scientific-use permission matrix. Agent plans,
-messages, graph state and orchestration remain outside Core. Record-navigation
-extensions require a demonstrated lookup gap; do not prebuild a graph engine.
+Use Skills, Loop and Graph as design lenses across Core information and behavior:
+information modules should support progressive disclosure, existing records should
+expose concrete continuation points, and explicit IDs/relationships should support
+bounded local navigation. Loop and Graph may shape Core's observable behavior
+management for people and agents, but do not create a standalone Skill loader,
+model loop or graph runtime. Context views belong to the caller. Treat
+causation/correlation labels as declared request relationships, not scientific proof
+or a dependency graph. Propagate observation limits; do not infer a general
+scientific-use permission matrix. Agent plans, messages, graph layout/state and
+orchestration remain outside Core. Record-navigation extensions require a
+demonstrated lookup gap; do not prebuild a graph engine.
 
 The current simplification is a breaking upgrade, verified with fresh projects
 and storage. Old projects, directories and history are not migration or recovery
