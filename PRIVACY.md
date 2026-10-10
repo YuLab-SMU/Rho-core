@@ -1,8 +1,9 @@
 # Rho Core data handling
 
-Design baseline: 2026-10-10. `main` has no new executable runtime. The old policy
-remains with its archived source. The following requirements must be implemented
-and verified as the corresponding capabilities are introduced.
+Design baseline: 2026-10-10. `main` contains the first managed flow; its data
+handling is listed below and in the [managed-run contract](docs/MANAGED-RUN.md). The
+old policy remains with its archived source. The other requirements here must be
+implemented and verified as the corresponding capabilities are introduced.
 
 Core retains data only for the selected managed guarantees: request identities
 and scope, actual arguments and targets, execution-owner associations, native
@@ -42,6 +43,15 @@ native event times remain distinct; unknown provenance is not invented. Any
 optional metric or trace export declares its content, destination, access and
 retention before use. The [engineering guide](docs/ENGINEERING.md) defines the
 minimum fact and validation checklist, without selecting a telemetry service.
+
+The first managed flow keeps accepted requests in memory for the lifetime of one
+`Core` value. A run's code snapshot and bounded stdout and stderr are written to
+`script`, `stdout` and `stderr` files with mode 0600 under the configured state
+directory, without redaction. Records do not expire during that lifetime. When the
+`Core` is dropped after all held runs are confirmed stopped, its instance directory
+is deleted. If the hosting process crashes, the directory remains and later
+instances do not clean it up. The library sends no telemetry and contacts no
+network service.
 
 Check delivered behavior before describing it as implemented. Execution and
 deployment limits are in [SECURITY](SECURITY.md).

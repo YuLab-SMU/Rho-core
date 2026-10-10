@@ -2,8 +2,10 @@
 
 设计基线：2026-10-10。本指南将 [核心原则](ARCHITECTURE.md#八实施必须守住的核心原则)
 与 [阶段目标](MISSION-AND-PLAN.md#分阶段实施与完成条件) 转为可执行的开发规则。
-当前仍是设计基线，没有新源码、已配置 CI 或运行时验收。本指南不选定语言、协议、
-存储产品或观测平台；具体版本、命令和限额在首个实施任务中实测并记录。
+阶段 1 首个受管流程已有源码与 [调用契约](MANAGED-RUN.md)，选型、命令和限额记录在
+其任务记录与 [README](../README.md#构建与检查) 中，实际验证过的平台见
+[进度总览](PROGRESS.md)；按用户决定暂不配置 CI。本指南不选定协议、存储产品或观测
+平台；后续流程的版本、命令和限额仍在各自任务中实测并记录。
 
 工程工作通过 [进度总览](PROGRESS.md) 和 [任务记录规则](ENGINEERING-MONITORING.md)
 持续记录实际动作、时间、耗时与验证。每项选定任务维护一份记录，开工、必要
@@ -130,9 +132,10 @@ Core 新增实现从已证明的受管缺口开始。仅为了统一名称、工
 
 ## 六、CI 与交付：按变更和责任边界触发
 
-源码、契约、说明、示例和定向回归随同一变更维护。首个源码交付建立能在临时
-环境独立构建和执行的 CI；当前文档阶段只运行文档检查，不能配置空测试来宣称
-已有持续集成。命令在实际选型后记录，CI 复用本地能运行的同一检查。
+源码、契约、说明、示例和定向回归随同一变更维护，用 [README](../README.md#构建与检查)
+中可复现的本地命令在临时环境独立构建和验收。用户于 2026-10-10 决定首个源码交付
+暂不配置 CI，尤其不建多平台 CI；以后由用户另行选定，接入时复用同一检查。没有
+运行 CI 就不报告 CI 通过，也不配置空测试来宣称已有持续集成。
 
 | 变更 | 必要检查 | 负责边界 |
 | --- | --- | --- |
@@ -206,7 +209,7 @@ Agent 可以阅读已有材料、生成复现、补测试或提出代码与契�
 
 - [Anthropic：Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)区分实际结果与调用轨迹，以及代码、模型和人工评分。这里据此按真实结果选择检查，并把模型评估留给 Agent Owner。
 - [Google SRE：Monitoring Distributed Systems](https://sre.google/sre-book/monitoring-distributed-systems/)强调以可行动问题选择监测并控制复杂度。这里据此从必要执行信息和实际故障出发，不要求部署完整观测栈。
-- [GitHub：Secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)说明工作流最小权限、敏感信息和依赖身份风险。这里据此分离测试与发布权限；尚未选用或配置 GitHub Actions。
+- [GitHub：Secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)说明工作流最小权限、敏感信息和依赖身份风险。这里据此分离测试与发布权限；按用户决定暂未配置 GitHub Actions。
 
 报告中 MCP Tasks、AutoGen checkpoint、Kagent、Langfuse、OpenTelemetry、PostgreSQL
 和云编排产品仅是候选，未选实现版本或验证其契约。协议任务、Agent checkpoint

@@ -1,9 +1,11 @@
 # Rho Core security boundary
 
-`main` currently contains a rebuild design, not an executable runtime. The former
-implementation and its assumptions remain on `codex/legacy-core-before-rebuild`.
-This document states requirements; it does not certify implemented security
-features. Responsibilities are defined in [Architecture](docs/ARCHITECTURE.md).
+`main` contains the rebuild design and the first managed flow, a Unix-only Rust
+library whose behavior is specified in the [managed-run contract](docs/MANAGED-RUN.md).
+The former implementation and its assumptions remain on
+`codex/legacy-core-before-rebuild`. This document states requirements; only the
+behavior described in that contract and exercised by its regressions is implemented.
+Responsibilities are defined in [Architecture](docs/ARCHITECTURE.md).
 
 The first selected deployment is a trusted, single-user local project. Core
 enforces the request identity, object association and access scope of its own
@@ -25,9 +27,20 @@ stdio connection's trust cannot simply transfer to a network deployment.
 The actual execution environment owns its process, file, network and isolation
 controls. Arbitrary code may use the user's OS privileges; path containment is not
 a process sandbox. If Core starts or holds processes, it must enforce the limits
-and lifetime behavior it declares for those resources. Remote sharing, multi-user
-policies and stronger isolation need concrete requirements and verification, rather
-than a general security framework or a model's judgment.
+and lifetime behavior it declares for those resources.
+
+In the first managed flow the application, not the request, configures executors
+as absolute program paths; a request can only name one of them. Runs inherit the
+user's privileges and Core's environment. A workdir must resolve inside the
+project root, which is a containment check rather than isolation. Each run gets
+its own process group, held and signaled only by Core until it is reaped. A
+process that leaves that group is outside Core's hold. Bounded resources reject
+new work explicitly. The caller name is a namespace in a trusted single-user
+setting, not authentication. The library opens no network listener.
+
+Remote sharing, multi-user policies and stronger isolation need concrete
+requirements and verification, rather than a general security framework or a
+model's judgment.
 
 Engineering checks exercise rejection through the direct programmatic boundary;
 selected protocol edges additionally test their own authentication and limits.

@@ -4,9 +4,10 @@
 on `codex/legacy-core-before-rebuild`. Read [README](README.md),
 [Mission and plan](docs/MISSION-AND-PLAN.md), [Architecture](docs/ARCHITECTURE.md)
 and [Rebuild workflow](docs/REBUILD.md) before selecting work. These documents define
-target behavior; they do not claim that a new runtime already exists.
+target behavior. Implemented behavior is limited to the first managed flow in the
+[managed-run contract](docs/MANAGED-RUN.md), within one `Core` value's lifetime.
 
-Use [Engineering guide](docs/ENGINEERING.md) to select the first flow, describe its
+Use [Engineering guide](docs/ENGINEERING.md) to select each flow, describe its
 contract, expose necessary facts and scope regression checks. The architecture's
 core principles govern expansion; this guide does not authorize a new framework.
 
@@ -85,12 +86,14 @@ regressions. Distinguish accepted requests, native effects and result retention;
 missing or unreadable records never authorize replay. Use process-lifetime claims
 until restart guarantees are implemented and tested.
 
-Introduce CI with actual source and reproducible commands. Core checks must not
-require model credentials, sibling sources or a user runtime. Agent evaluation,
-protocol integration and native acceptance have separate owners and triggers.
-Diagnostics are scoped and bounded; do not collect hidden reasoning, all external
-actions or raw request/output content by default. Agent-authored repairs and
-contract changes use the normal verified change process, without implicit deploys.
+Do not add CI until the user selects it; it was deferred on 2026-10-10. Verify
+with the reproducible local commands in [README](README.md#构建与检查). Core
+checks must not require model credentials, sibling sources or a user runtime.
+Agent evaluation, protocol integration and native acceptance have separate owners
+and triggers. Diagnostics are scoped and bounded; do not collect hidden reasoning,
+all external actions or raw request/output content by default. Agent-authored
+repairs and contract changes use the normal verified change process, without
+implicit deploys.
 
 Commit coherent work. Keep design documents on `main`; archive source stays on its
 branch. Creating the archive or committing locally does not publish it. Before an
