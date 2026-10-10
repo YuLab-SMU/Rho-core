@@ -6,6 +6,10 @@ on `codex/legacy-core-before-rebuild`. Read [README](README.md),
 and [Rebuild workflow](docs/REBUILD.md) before selecting work. These documents define
 target behavior; they do not claim that a new runtime already exists.
 
+Use [Engineering guide](docs/ENGINEERING.md) to select the first flow, describe its
+contract, expose necessary facts and scope regression checks. The architecture's
+core principles govern expansion; this guide does not authorize a new framework.
+
 ## Scope and design
 
 - This repository owns Core's programmatic boundary and the selected managed
@@ -66,6 +70,20 @@ Run focused behavior checks; never run Cargo builds/tests concurrently. Report
 only checks actually executed. Documentation changes need local link/anchor checks
 and rendered inspection. Never start or restart a user's Host or R session for
 verification. Old binaries and old passing tests do not verify the new Core.
+
+Deliver callable examples and necessary fact retrieval with each selected flow.
+Concurrent duplicate requests must be covered by behavior checks, not just a
+sequential retry. Reproduce actual failures before fixing them and retain focused
+regressions. Distinguish accepted requests, native effects and result retention;
+missing or unreadable records never authorize replay. Use process-lifetime claims
+until restart guarantees are implemented and tested.
+
+Introduce CI with actual source and reproducible commands. Core checks must not
+require model credentials, sibling sources or a user runtime. Agent evaluation,
+protocol integration and native acceptance have separate owners and triggers.
+Diagnostics are scoped and bounded; do not collect hidden reasoning, all external
+actions or raw request/output content by default. Agent-authored repairs and
+contract changes use the normal verified change process, without implicit deploys.
 
 Commit coherent work. Keep design documents on `main`; archive source stays on its
 branch. Creating the archive or committing locally does not publish it. Before an

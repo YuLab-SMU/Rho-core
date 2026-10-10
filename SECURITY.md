@@ -29,6 +29,16 @@ and lifetime behavior it declares for those resources. Remote sharing, multi-use
 policies and stronger isolation need concrete requirements and verification, rather
 than a general security framework or a model's judgment.
 
+Engineering checks exercise rejection through the direct programmatic boundary;
+selected protocol edges additionally test their own authentication and limits.
+Core tests run on disposable resources without model or publication credentials.
+Build/test jobs cannot deploy or replace a user's runtime as an incidental step.
+Agent-generated changes follow the same scoped review and verification process as
+other changes; a suggested repair cannot expand execution authority or replay an
+uncertain native action. There is no blanket extra approval for writes or network
+access already authorized in the selected environment. See the
+[engineering guide](docs/ENGINEERING.md) for regression and delivery boundaries.
+
 For suspected vulnerabilities, use
 [private vulnerability reporting](https://github.com/YuLab-SMU/Rho/security/advisories/new).
 Include the affected source or artifact, platform, impact and minimal reproduction.

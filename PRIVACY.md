@@ -32,5 +32,16 @@ Credentials must not enter source control or ordinary diagnostics. Telemetry,
 uploads and publication require explicit product decisions, not an implicit
 consequence of adding a tool or transport.
 
+Within the selected caller's access scope, necessary managed facts are available
+on demand: original request, owner/object association, known execution state,
+uncertainty, result location and guarantee limits. A missing record, failed read or
+expired reference is reported explicitly; retrieval does not imply exposing other
+callers' data or unlimited history. Diagnostic logs reference these facts rather
+than copying full arguments or outputs by default. Observation timestamps and
+native event times remain distinct; unknown provenance is not invented. Any
+optional metric or trace export declares its content, destination, access and
+retention before use. The [engineering guide](docs/ENGINEERING.md) defines the
+minimum fact and validation checklist, without selecting a telemetry service.
+
 Check delivered behavior before describing it as implemented. Execution and
 deployment limits are in [SECURITY](SECURITY.md).
