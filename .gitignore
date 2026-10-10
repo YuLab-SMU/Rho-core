@@ -1,6 +1,8 @@
 target/
 /work/
 node_modules/
+__pycache__/
+*.pyc
 /.rho/
 /.Rproj.user/
 .Rhistory

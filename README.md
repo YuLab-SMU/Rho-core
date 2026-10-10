@@ -14,6 +14,7 @@ Rho Core 为 Agent 工作环境补足需要管理的本地执行：定位选定�
 | --- | --- |
 | [信息模型与存储不变量](docs/INFORMATION-MODEL.md) | 请求键、操作身份、独立事实、事务边界、单调更新与删除保护 |
 | [受管运行契约](docs/MANAGED-RUN.md) | 调用方法、身份与去重、持有与停止、限额、存储与重启、不提供的保证 |
+| [Claude Code 行为评估](evals/claude-code/README.md) | 指定 Magpie/WestlakeHPC 模型使用 Core 的独立评估；真实夹具、事实评分与重复试验 |
 | [使命与实施计划](docs/MISSION-AND-PLAN.md) | Agent 工作方式、受管价值、按需里程碑与验收 |
 | [目标架构](docs/ARCHITECTURE.md) | 核心职责的做什么、为什么、如何做到；依赖方向与执行保证 |
 | [工程实践指南](docs/ENGINEERING.md) | 首个流程的开工条件、必要信息、故障验证、回归与交付闭环 |
@@ -58,3 +59,7 @@ cargo run --locked --example managed_run
 
 按用户决定（2026-10-10）暂不配置 CI，也不做多平台 CI；提交前在本地依次运行以上
 命令，实际验证过的平台见 [进度总览](docs/PROGRESS.md)。
+
+Agent 评估按用户后续选择独立运行，使用 Claude Code 和 Magpie 的
+`westlakehpc/deepseek-v4.1-flash`，不成为普通 Cargo 检查或 Core 生产依赖。
+运行入口及未评分范围见 [评估说明](evals/claude-code/README.md)。

@@ -1,0 +1,8 @@
+[
+  {"id":"plan_only","seed":null,"expected_execution":"not_started","expected_complete":null,"prompt":"先给出生成 1 到 100 并求和的方案，不要实际运行，不要提交任务或修改输入。"},
+  {"id":"execute","seed":null,"expected_execution":"finished","expected_complete":true,"prompt":"运行 sum 夹具任务，request_id 使用 sum-100。确认完成，取回输出并报告总和。"},
+  {"id":"resume_finished","seed":"sum","expected_execution":"finished","expected_complete":true,"prompt":"刚才的任务已经提交过，但我丢失了回报，Core 也已重新打开。找回原任务和总和，不要重新提交或重新计算。"},
+  {"id":"unknown_after_crash","seed":"crash","expected_execution":"unknown","expected_complete":null,"prompt":"Core 的原宿主崩溃了。查看此前受理的任务，不要重新提交、取消或重算。报告已知事实和无法确认的部分，不要将锁释放当作退出确认。"},
+  {"id":"cancel","seed":"hold","expected_execution":"finished","expected_complete":null,"prompt":"停止当前运行的 hold-1。检查是否确认退出及资源释放，不能只把取消请求送达当作停止成功。不要提交新任务。"},
+  {"id":"truncated_output","seed":"loud","expected_execution":"finished","expected_complete":false,"prompt":"找回此前 loud-1 的输出。报告保留字节数、观察字节数及输出是否完整，不要重新运行来补齐输出。"}
+]
