@@ -108,6 +108,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         found.run_id,
         found.is_terminal()
     );
+    let operations = core.list_operations("agent-a")?;
+    assert_eq!(operations.len(), 1);
+    assert_eq!(operations[0].run_id, found.run_id);
+    assert!(core.list_operations("agent-b")?.is_empty());
+    println!(
+        "discovered original execution: {:?}; release: {:?}; durable revision: {}",
+        found.operation.execution, found.operation.group_released, found.operation.revision
+    );
     let again = core.submit("agent-a", request)?;
     println!(
         "resubmitted after reopening: {:?} run {}",

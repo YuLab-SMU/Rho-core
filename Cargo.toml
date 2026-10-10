@@ -14,11 +14,13 @@ fault-injection = []
 
 [dependencies]
 libc = "0.2"
+rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
+tempfile = "3"
 
 [dev-dependencies]
 # Enables the crash points for this crate's own tests and examples only.
 rho-core = { path = ".", features = ["fault-injection"] }
-tempfile = "3"
+rusqlite = { version = "0.40.2", features = ["backup"] }

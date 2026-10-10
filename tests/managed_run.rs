@@ -766,7 +766,7 @@ fn a_known_start_failure_is_recorded_and_never_retried() {
 #[test]
 fn a_record_that_cannot_be_saved_means_no_acceptance_and_no_dispatch() {
     let fx = fixture();
-    let records = fx.core.capability().state_dir.join("records");
+    let records = fx.core.capability().state_dir.join("blobs/sha256");
     fs::set_permissions(&records, fs::Permissions::from_mode(0o500)).unwrap();
     let submitted = fx.core.submit(CALLER, request("unsaved", SUM, &["3"]));
     fs::set_permissions(&records, fs::Permissions::from_mode(0o700)).unwrap();

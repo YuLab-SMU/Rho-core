@@ -17,11 +17,12 @@ compile_error!("rho-core currently supports Unix platforms only");
 mod error;
 mod fault;
 mod os;
+mod record;
 mod run;
 mod store;
 
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -31,6 +32,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
 
 pub use error::{ForgetError, LookupError, OpenError, ReadError, SubmitError, WorkdirProblem};
+pub use record::{
+    BlobRef, DispatchFact, ExecutionFact, FactSource, Knowledge, OperationRecord, OutputSet,
+    OutputStream, RequestKey, RetentionState,
+};
 pub use run::{
     CancelInfo, CancelReason, Exit, OutputChunk, RequestInfo, RunStatus, RunView, Stream,
     StreamInfo,
@@ -86,6 +91,8 @@ pub struct Limits {
     pub max_arg_bytes: usize,
     /// Retained bytes per output stream; later bytes are counted, not kept.
     pub max_stream_bytes: u64,
+    /// Maximum immutable output chunks per stream; bounds metadata and memory.
+    pub max_output_chunks: usize,
     /// Largest chunk returned by one output read.
     pub max_read_bytes: usize,
     /// Wait between SIGTERM and SIGKILL when stopping a run.
@@ -103,6 +110,7 @@ impl Default for Limits {
             max_args: 256,
             max_arg_bytes: 64 << 10,
             max_stream_bytes: 1 << 20,
+            max_output_chunks: 4096,
             max_read_bytes: 64 << 10,
             stop_grace: Duration::from_secs(2),
             output_close_grace: Duration::from_secs(1),
@@ -156,7 +164,7 @@ pub struct RunRequest {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Disposition {
-    /// This submission created the record and dispatched the run.
+    /// This submission durably accepted the request; native start may still fail.
     Accepted,
     /// The identity was already accepted with the same request; nothing was dispatched.
     Existing,
@@ -194,7 +202,7 @@ pub struct Core {
     /// Distinguishes run ids of this instance from earlier ones.
     instance: String,
     /// Held for the Core's lifetime and by every holder thread.
-    store_lock: Arc<File>,
+    store: Arc<store::OperationStore>,
     executors: HashMap<String, Executor>,
     limits: Limits,
     registry: Mutex<Registry>,
@@ -206,7 +214,7 @@ struct Registry {
     runs: HashMap<(String, String), Arc<RunShared>>,
     /// Record keys whose record could not be read, with the reason. Their
     /// identities are blocked: an unreadable record never authorizes a replay.
-    unreadable: HashMap<String, String>,
+    unreadable: HashMap<(String, String), String>,
     next_seq: u64,
     shutting_down: bool,
 }
@@ -241,27 +249,34 @@ impl Core {
                 return Err(error("executor names must be unique".into()));
             }
         }
-        let (state_dir, store_lock) =
-            store::open(&config.state_dir, &project_root).map_err(error)?;
-        let listed = store::list(&state_dir)
-            .map_err(|e| error(format!("state dir `{}`: {e}", state_dir.display())))?;
+        let store = Arc::new(
+            store::OperationStore::open(&config.state_dir, &project_root)
+                .map_err(|e| error(e.to_string()))?,
+        );
+        let state_dir = store.dir.clone();
         let mut registry = Registry::default();
-        for (key, dir) in listed {
-            match RunShared::load(dir, &key) {
-                Ok(run) => {
-                    let identity = (run.request.caller.clone(), run.request.request_id.clone());
-                    registry.runs.insert(identity, Arc::new(run));
+        for (caller, request_id) in store.identities().map_err(|e| error(e.to_string()))? {
+            check_identity("stored caller", &caller).map_err(error)?;
+            check_identity("stored request id", &request_id).map_err(error)?;
+            match store.get(&caller, &request_id) {
+                Ok(Some(stored)) => {
+                    registry.runs.insert(
+                        (caller, request_id),
+                        Arc::new(RunShared::new(stored, Arc::clone(&store), false)),
+                    );
                 }
-                Err(reason) => {
-                    registry.unreadable.insert(key, reason);
+                Err(store::StoreError::Unreadable(reason)) => {
+                    registry.unreadable.insert((caller, request_id), reason);
                 }
+                Err(e) => return Err(error(e.to_string())),
+                Ok(None) => return Err(error("listed acceptance disappeared".into())),
             }
         }
         Ok(Self {
             project_root,
             state_dir,
             instance: instance_token(),
-            store_lock: Arc::new(store_lock),
+            store,
             executors,
             limits: config.limits,
             registry: Mutex::new(registry),
@@ -297,29 +312,32 @@ impl Core {
             return if existing.fingerprint == hex(&fingerprint) {
                 Ok(Submitted {
                     disposition: Disposition::Existing,
-                    run: existing.view(),
+                    run: existing.view().map_err(submit_lookup_error)?,
                 })
             } else {
                 Err(SubmitError::Conflict {
-                    existing: Box::new(existing.view()),
+                    existing: Box::new(existing.view().map_err(submit_lookup_error)?),
                 })
             };
         }
-        let record_key = store::record_key(caller, &request.request_id);
-        if let Some(reason) = registry.unreadable.get(&record_key) {
+        if let Some(reason) = registry.unreadable.get(&key) {
             return Err(SubmitError::RecordUnreadable {
                 reason: reason.clone(),
             });
         }
+        // The database, not an absent cache entry, decides whether a key is free.
+        if let Some(stored) = self
+            .store
+            .get(caller, &request.request_id)
+            .map_err(submit_store_error)?
+        {
+            let run = Arc::new(RunShared::new(stored, Arc::clone(&self.store), false));
+            registry.runs.insert(key, Arc::clone(&run));
+            return existing_submission(&run, &fingerprint);
+        }
         let (executor, workdir_resolved) = resolved?;
         if registry.shutting_down {
             return Err(SubmitError::ShuttingDown);
-        }
-        if registry.runs.len() + registry.unreadable.len() >= self.limits.max_records {
-            return Err(SubmitError::Capacity {
-                resource: "accepted request records",
-                limit: self.limits.max_records,
-            });
         }
         // Only submissions increment, and only under the registry lock.
         if self.running.load(Ordering::SeqCst) >= self.limits.max_running {
@@ -345,37 +363,61 @@ impl Core {
         let record = store::Accepted {
             run_id: format!("{}.{seq}", self.instance),
             fingerprint: hex(&fingerprint),
+            key: RequestKey {
+                scope_id: self.store.scope_id.clone(),
+                caller_id: caller.into(),
+                request_id: request.request_id.clone(),
+            },
+            script: BlobRef {
+                sha256: info.code_sha256.clone(),
+                bytes: info.code_bytes as u64,
+            },
             request: info,
             accepted_at: SystemTime::now(),
             stream_limit: self.limits.max_stream_bytes,
+            chunk_limit: self.limits.max_output_chunks,
         };
-        // Committed under the registry lock: a concurrent duplicate either sees
-        // the committed record or waits for this decision.
-        let dir = store::commit(&self.state_dir, &record_key, &record, &request.code)
-            .map_err(|e| SubmitError::Storage(format!("record not saved, nothing started: {e}")))?;
+        let stored = match self
+            .store
+            .accept(record, &request.code, self.limits.max_records)
+            .map_err(submit_store_error)?
+        {
+            store::Acceptance::New(stored) => *stored,
+            store::Acceptance::Existing(stored) => {
+                let run = Arc::new(RunShared::new(*stored, Arc::clone(&self.store), false));
+                registry.runs.insert(key, Arc::clone(&run));
+                return existing_submission(&run, &fingerprint);
+            }
+        };
         fault::point("committed");
         self.running.fetch_add(1, Ordering::SeqCst);
-        let run = Arc::new(RunShared::accepted(record, dir));
+        let run = Arc::new(RunShared::new(stored, Arc::clone(&self.store), true));
         registry.runs.insert(key, Arc::clone(&run));
         drop(registry);
-
-        run::dispatch(
-            &run,
-            executor,
-            &request.args,
-            &self.limits,
-            &self.running,
-            &self.store_lock,
-        );
+        run::dispatch(&run, executor, &request.args, &self.limits, &self.running);
         Ok(Submitted {
             disposition: Disposition::Accepted,
-            run: run.view(),
+            run: run.view().map_err(submit_lookup_error)?,
         })
     }
 
     /// Current known facts of an accepted request in this caller's scope.
     pub fn lookup(&self, caller: &str, request_id: &str) -> Result<RunView, LookupError> {
-        Ok(self.find(caller, request_id)?.view())
+        self.find(caller, request_id)?.view()
+    }
+
+    /// Finds this caller's retained operations after a restart, without needing
+    /// to remember each request id. Bounded by the store's retained records.
+    pub fn list_operations(&self, caller: &str) -> Result<Vec<RunView>, LookupError> {
+        check_identity("caller", caller).map_err(LookupError::InvalidIdentity)?;
+        let mut views = Vec::new();
+        for (owner, id) in self.store.identities().map_err(run::lookup_error)? {
+            if owner == caller {
+                views.push(self.lookup(caller, &id)?);
+            }
+        }
+        views.sort_by(|a, b| a.run_id.cmp(&b.run_id));
+        Ok(views)
     }
 
     /// Waits up to `timeout` for the run to become terminal and returns the
@@ -386,16 +428,15 @@ impl Core {
         request_id: &str,
         timeout: Duration,
     ) -> Result<RunView, LookupError> {
-        Ok(self.find(caller, request_id)?.wait(timeout))
+        self.find(caller, request_id)?.wait(timeout)
     }
 
     /// Requests a stop: SIGTERM to the run's process group, SIGKILL after
     /// `stop_grace`. The returned view records the request; the stop is
-    /// confirmed only when the status becomes terminal.
+    /// confirmed by native execution facts, independently of resource release.
     pub fn cancel(&self, caller: &str, request_id: &str) -> Result<RunView, LookupError> {
-        Ok(self
-            .find(caller, request_id)?
-            .request_cancel(CancelReason::Caller))
+        self.find(caller, request_id)?
+            .request_cancel(CancelReason::Caller)
     }
 
     /// Reads retained output from `offset`, at most `min(max_bytes, max_read_bytes)` bytes.
@@ -412,32 +453,65 @@ impl Core {
             .read(stream, offset, max_bytes)
     }
 
-    /// Removes a terminal record so its storage and record slot are freed. The
+    /// Removes a completed, released record with no unsaved facts. The
     /// identity is then unknown: a later submission under it runs again.
     pub fn forget(&self, caller: &str, request_id: &str) -> Result<(), ForgetError> {
-        let run = self.find(caller, request_id)?;
+        check_identity("caller", caller).map_err(LookupError::InvalidIdentity)?;
+        check_identity("request id", request_id).map_err(LookupError::InvalidIdentity)?;
         let mut registry = lock(&self.registry);
-        if !run.view().is_terminal() {
-            return Err(ForgetError::NotTerminal(Box::new(run.view())));
+        let key = (caller.to_owned(), request_id.to_owned());
+        if let Some(reason) = registry.unreadable.get(&key) {
+            return Err(LookupError::RecordUnreadable {
+                reason: reason.clone(),
+            }
+            .into());
         }
-        store::discard(&self.state_dir, &run.dir, &run.run_id)
-            .map_err(|e| ForgetError::Io(e.to_string()))?;
-        registry
+        if !registry.runs.contains_key(&key)
+            && self
+                .store
+                .get(caller, request_id)
+                .map_err(run::lookup_error)?
+                .is_some()
+        {
+            return Err(LookupError::RecordUnreadable {
+                reason: "stored acceptance is not loaded".into(),
+            }
+            .into());
+        }
+        let run = registry
             .runs
-            .remove(&(caller.to_owned(), request_id.to_owned()));
+            .get(&key)
+            .ok_or_else(|| LookupError::NotFound {
+                caller: caller.into(),
+                request_id: request_id.into(),
+            })?;
+        let view = run.view()?;
+        if view.operation.retention != RetentionState::Removable {
+            return Err(ForgetError::NotTerminal(Box::new(view)));
+        }
+        self.store
+            .discard(&view.operation)
+            .map_err(|e| ForgetError::Io(e.to_string()))?;
+        registry.runs.remove(&key);
         Ok(())
     }
 
-    /// Records that could not be read, by record directory, with the reason.
+    /// Unreadable stored rows or database queries, by database path and reason.
     /// Their identities are rejected until the record is repaired or removed
     /// by hand; Core never re-dispatches them.
     pub fn unreadable_records(&self) -> Vec<(PathBuf, String)> {
-        let records = self.state_dir.join(store::RECORDS);
-        let mut list: Vec<_> = lock(&self.registry)
-            .unreadable
-            .iter()
-            .map(|(key, reason)| (records.join(key), reason.clone()))
-            .collect();
+        let path = self.state_dir.join(store::DATABASE);
+        let mut list = Vec::new();
+        match self.store.identities() {
+            Ok(identities) => {
+                for (caller, id) in identities {
+                    if let Err(error) = self.store.get(&caller, &id) {
+                        list.push((path.clone(), format!("{caller}/{id}: {error}")));
+                    }
+                }
+            }
+            Err(error) => list.push((path, error.to_string())),
+        }
         list.sort();
         list
     }
@@ -457,7 +531,7 @@ impl Core {
         };
         let held: Vec<Arc<RunShared>> = runs
             .into_iter()
-            .filter(|run| !run.request_cancel(CancelReason::Shutdown).is_terminal())
+            .filter(|run| !run.shutdown_stop().is_terminal())
             .collect();
         let deadline = Instant::now()
             + self.limits.stop_grace
@@ -466,7 +540,7 @@ impl Core {
         let mut report = ShutdownReport::default();
         for run in held {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if run.wait(remaining).is_terminal() {
+            if run.wait_held(remaining).is_terminal() {
                 report.stopped.push(run.run_id.clone());
             } else {
                 report.not_confirmed.push(run.run_id.clone());
@@ -479,14 +553,30 @@ impl Core {
         check_identity("caller", caller).map_err(LookupError::InvalidIdentity)?;
         check_identity("request id", request_id).map_err(LookupError::InvalidIdentity)?;
         let key = (caller.to_owned(), request_id.to_owned());
-        lock(&self.registry)
-            .runs
-            .get(&key)
-            .cloned()
-            .ok_or_else(|| LookupError::NotFound {
-                caller: caller.to_owned(),
-                request_id: request_id.to_owned(),
-            })
+        let registry = lock(&self.registry);
+        if let Some(run) = registry.runs.get(&key) {
+            return Ok(Arc::clone(run));
+        }
+        if let Some(reason) = registry.unreadable.get(&key) {
+            return Err(LookupError::RecordUnreadable {
+                reason: reason.clone(),
+            });
+        }
+        // An unavailable database is not an absent request.
+        if self
+            .store
+            .get(caller, request_id)
+            .map_err(run::lookup_error)?
+            .is_some()
+        {
+            return Err(LookupError::RecordUnreadable {
+                reason: "acceptance exists outside this instance's loaded registry".into(),
+            });
+        }
+        Err(LookupError::NotFound {
+            caller: caller.to_owned(),
+            request_id: request_id.to_owned(),
+        })
     }
 
     fn check_shape(&self, request: &RunRequest) -> Result<(), SubmitError> {
@@ -535,8 +625,9 @@ impl Drop for Core {
             // Those holders keep the store locked until they finish.
             return;
         }
+        lock(&self.registry).runs.clear();
         let deadline = Instant::now() + SHUTDOWN_MARGIN;
-        while Arc::strong_count(&self.store_lock) > 1 && Instant::now() < deadline {
+        while Arc::strong_count(&self.store) > 1 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
@@ -590,6 +681,7 @@ fn check_limits(limits: &Limits) -> Result<(), String> {
         limits.max_args,
         limits.max_arg_bytes,
         limits.max_read_bytes,
+        limits.max_output_chunks,
     ];
     if counts.contains(&0) || limits.max_stream_bytes == 0 {
         return Err("limits must be greater than zero".into());
@@ -617,4 +709,34 @@ fn fingerprint(request: &RunRequest) -> [u8; 32] {
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn submit_lookup_error(error: LookupError) -> SubmitError {
+    match error {
+        LookupError::RecordUnreadable { reason } => SubmitError::RecordUnreadable { reason },
+        error => SubmitError::Storage(error.to_string()),
+    }
+}
+fn submit_store_error(error: store::StoreError) -> SubmitError {
+    match error {
+        store::StoreError::Capacity(limit) => SubmitError::Capacity {
+            resource: "accepted request records",
+            limit,
+        },
+        store::StoreError::Unreadable(reason) => SubmitError::RecordUnreadable { reason },
+        error => SubmitError::Storage(format!("storage failed; nothing started: {error}")),
+    }
+}
+fn existing_submission(run: &RunShared, fingerprint: &[u8; 32]) -> Result<Submitted, SubmitError> {
+    let view = run.view().map_err(submit_lookup_error)?;
+    if run.fingerprint == hex(fingerprint) {
+        Ok(Submitted {
+            disposition: Disposition::Existing,
+            run: view,
+        })
+    } else {
+        Err(SubmitError::Conflict {
+            existing: Box::new(view),
+        })
+    }
 }

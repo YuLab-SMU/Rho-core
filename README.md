@@ -6,12 +6,13 @@ Rho Core 为 Agent 工作环境补足需要管理的本地执行：定位选定�
 模型循环、协议兼容与科研方法由各自的 Owner 承担。
 
 本仓库已选择从零重建。`main` 包含设计与开发规则，以及首个受管流程的 Rust 库
-`rho-core`：仅支持 Unix；受理记录持久保存在 `state_dir`，重启后可找回且不重派发
-（阶段 2）；尚无公共 SDK 或协议接入。原实现、原测试和原设计完整保存在分支
+`rho-core`：仅支持 Unix；受理与独立执行事实使用 SQLite 事务持久保存，脚本和输出为内容寻址文件，
+重启后可按调用方列出原操作且不重派发（阶段 2 review 修复）；尚无公共 SDK 或协议接入。原实现、原测试和原设计完整保存在分支
 `codex/legacy-core-before-rebuild`。新源码在 `main` 分阶段建立，设计文档继续留在 `main`。
 
 | 入口 | 内容 |
 | --- | --- |
+| [信息模型与存储不变量](docs/INFORMATION-MODEL.md) | 请求键、操作身份、独立事实、事务边界、单调更新与删除保护 |
 | [受管运行契约](docs/MANAGED-RUN.md) | 调用方法、身份与去重、持有与停止、限额、存储与重启、不提供的保证 |
 | [使命与实施计划](docs/MISSION-AND-PLAN.md) | Agent 工作方式、受管价值、按需里程碑与验收 |
 | [目标架构](docs/ARCHITECTURE.md) | 核心职责的做什么、为什么、如何做到；依赖方向与执行保证 |
@@ -34,7 +35,8 @@ Rho Core 为 Agent 工作环境补足需要管理的本地执行：定位选定�
 调用与保证见 [受管运行契约](docs/MANAGED-RUN.md)，可运行调用见
 [`examples/managed_run.rs`](examples/managed_run.rs)，行为回归见
 [`tests/managed_run.rs`](tests/managed_run.rs)，故障实验见
-[`tests/restart.rs`](tests/restart.rs)；各平台的实际验证范围见
+[`tests/restart.rs`](tests/restart.rs)，存储失败与事实独立性见
+[`tests/storage.rs`](tests/storage.rs)；各平台的实际验证范围见
 [进度总览](docs/PROGRESS.md)。后续流程仍先复用实际工具确认缺口，不以重新建设文件
 读取、统一工具目录或协议框架为起点。模型、协议和领域集成各自在真实消费者出现后
 验证；没有观测服务。

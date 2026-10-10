@@ -44,14 +44,19 @@ optional metric or trace export declares its content, destination, access and
 retention before use. The [engineering guide](docs/ENGINEERING.md) defines the
 minimum fact and validation checklist, without selecting a telemetry service.
 
-The first managed flow keeps accepted requests in memory for the lifetime of one
-`Core` value. A run's code snapshot and bounded stdout and stderr are written to
-`script`, `stdout` and `stderr` files with mode 0600 under the configured state
-directory, without redaction. Records do not expire during that lifetime. When the
-`Core` is dropped after all held runs are confirmed stopped, its instance directory
-is deleted. If the hosting process crashes, the directory remains and later
-instances do not clean it up. The library sends no telemetry and contacts no
-network service.
+The selected managed flow retains accepted requests and independent facts across
+Core lifetimes in `state_dir/core.sqlite3`, including SQLite's WAL while present.
+Script snapshots and bounded output chunks are immutable content-addressed files
+under `blobs/sha256/`; data files use mode 0600, without redaction. `runs/` contains
+only per-operation observation locks. Dropping Core does not delete its records.
+Records do not expire, and uncertain native completion never authorizes automatic
+replay or deletion. `forget` requires confirmed completion/release and saved facts;
+its committed transaction explicitly releases the request key and artifact
+references. Unreferenced blobs are collected, except those pinned by unsaved
+in-memory output. Logical deletion is not secure erasure of database pages, WAL,
+filesystem blocks or backup copies. The library sends no telemetry and contacts
+no network service. Existing file-format stores are preserved and rejected, not
+silently imported or treated as empty.
 
 Check delivered behavior before describing it as implemented. Execution and
 deployment limits are in [SECURITY](SECURITY.md).

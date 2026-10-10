@@ -2,8 +2,9 @@
 //! retained output.
 
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -14,12 +15,13 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::ReadError;
-use crate::store::{self, Accepted, Dispatch, Outcome, Spawned};
+use crate::error::{LookupError, ReadError};
+use crate::record::*;
+use crate::store::{self, Fact, OperationStore, Stored};
 use crate::{Executor, Limits, fault, os};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
-const READ_BUFFER: usize = 64 * 1024;
+const READ_BUFFER: usize = store::BLOB_CHUNK;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stream {
@@ -28,10 +30,10 @@ pub enum Stream {
 }
 
 impl Stream {
-    fn file_name(self) -> &'static str {
+    fn kind(self) -> &'static str {
         match self {
-            Self::Stdout => store::STDOUT,
-            Self::Stderr => store::STDERR,
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
         }
     }
 }
@@ -100,12 +102,10 @@ pub enum RunStatus {
 }
 
 impl RunStatus {
-    /// Nothing of this run is running or held any longer.
+    /// The selected native execution has a known end. RunView also checks the
+    /// current holder; retention separately requires known resource release.
     pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::NotStarted { .. } | Self::Finished { .. } | Self::Detached { present: false, .. }
-        )
+        matches!(self, Self::NotStarted { .. } | Self::Finished { .. })
     }
 }
 
@@ -123,6 +123,8 @@ pub struct CancelInfo {
     pub requested_at: SystemTime,
     pub term_sent_at: Option<SystemTime>,
     pub kill_sent_at: Option<SystemTime>,
+    /// A failed signal syscall is not reported as a successfully sent signal.
+    pub signal_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,11 +158,14 @@ pub struct RunView {
     /// A known fact that could not be saved yet. Saving is retried on later
     /// reads; until then a restart would not see that fact.
     pub unsaved: Option<String>,
+    pub operation: OperationRecord,
+    /// This Core still owns the native process or is draining its output.
+    pub held: bool,
 }
 
 impl RunView {
     pub fn is_terminal(&self) -> bool {
-        self.status.is_terminal()
+        !self.held && self.status.is_terminal()
     }
 }
 
@@ -174,30 +179,21 @@ pub struct OutputChunk {
     pub run_terminal: bool,
 }
 
-/// A fact known in memory whose durable write failed; retried on later reads.
-#[derive(PartialEq)]
-enum Pending {
-    Spawned,
-    Cancel,
-    Outcome,
-}
-
 pub(crate) struct RunShared {
     pub(crate) run_id: String,
     pub(crate) fingerprint: String,
     pub(crate) request: RequestInfo,
-    accepted_at: SystemTime,
     pub(crate) dir: PathBuf,
+    store: Arc<OperationStore>,
+    chunk_limit: usize,
     state: Mutex<State>,
     changed: Condvar,
 }
 
 struct State {
-    status: RunStatus,
-    cancel: Option<CancelInfo>,
-    stdout: StreamInfo,
-    stderr: StreamInfo,
-    pending: Vec<Pending>,
+    record: OperationRecord,
+    held: bool,
+    pending: Vec<Fact>,
     unsaved: Option<String>,
 }
 
@@ -207,13 +203,13 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn mark(state: &mut State, fact: Pending) {
+fn mark(state: &mut State, fact: Fact) {
     if !state.pending.contains(&fact) {
         state.pending.push(fact);
     }
 }
 
-fn empty_stream(limit_bytes: u64) -> StreamInfo {
+pub(crate) fn empty_stream(limit_bytes: u64) -> StreamInfo {
     StreamInfo {
         retained_bytes: 0,
         observed_bytes: 0,
@@ -224,175 +220,231 @@ fn empty_stream(limit_bytes: u64) -> StreamInfo {
 }
 
 impl RunShared {
-    /// A newly committed record; the caller dispatches it next.
-    pub(crate) fn accepted(record: Accepted, dir: PathBuf) -> Self {
-        let stream = empty_stream(record.stream_limit);
-        Self::with_state(
-            record,
-            dir,
-            State {
-                status: RunStatus::Starting,
-                cancel: None,
-                stdout: stream.clone(),
-                stderr: stream,
-                pending: Vec::new(),
-                unsaved: None,
-            },
-        )
-    }
-
-    fn with_state(record: Accepted, dir: PathBuf, state: State) -> Self {
-        Self {
-            run_id: record.run_id,
-            fingerprint: record.fingerprint,
-            request: record.request,
-            accepted_at: record.accepted_at,
-            dir,
+    pub(crate) fn new(stored: Stored, store: Arc<OperationStore>, held: bool) -> Self {
+        let a = stored.accepted;
+        let mut state = State {
+            record: stored.record,
+            held,
+            pending: Vec::new(),
+            unsaved: None,
+        };
+        // Only a durable NotAttempted fact authorizes the conclusion that no
+        // process was started. No recovered record is ever dispatched.
+        if !held
+            && state.record.dispatch.value() == Some(&DispatchFact::NotAttempted)
+            && state.record.execution.value().is_none()
+        {
+            state.record.execution = Knowledge::known(ExecutionFact::NotStarted {
+                reason: "the Core instance stopped before dispatching this request; no process was started".into()
+            }, FactSource::StoreRecovery);
+            state.record.group_released = Knowledge::known(true, FactSource::StoreRecovery);
+            mark(&mut state, Fact::Execution);
+            mark(&mut state, Fact::Release);
+        }
+        if !held
+            && !state.record.removable()
+            && state.record.dispatch.value() == Some(&DispatchFact::Attempted)
+        {
+            if !state.record.outputs.stdout.info.eof
+                && state.record.outputs.stdout.info.retention_error.is_none()
+            {
+                state.record.outputs.stdout.info.retention_error =
+                    Some("the previous holder stopped; later output cannot be retained".into());
+                state.record.outputs.stdout.observed_at = SystemTime::now();
+                state.record.outputs.stdout.source = FactSource::StoreRecovery;
+                mark(&mut state, Fact::Stdout);
+            }
+            if !state.record.outputs.stderr.info.eof
+                && state.record.outputs.stderr.info.retention_error.is_none()
+            {
+                state.record.outputs.stderr.info.retention_error =
+                    Some("the previous holder stopped; later output cannot be retained".into());
+                state.record.outputs.stderr.observed_at = SystemTime::now();
+                state.record.outputs.stderr.source = FactSource::StoreRecovery;
+                mark(&mut state, Fact::Stderr);
+            }
+        }
+        let run = Self {
+            run_id: a.run_id.clone(),
+            fingerprint: a.fingerprint,
+            request: a.request,
+            dir: store.run_dir(&a.run_id),
+            chunk_limit: a.chunk_limit,
+            store,
             state: Mutex::new(state),
             changed: Condvar::new(),
-        }
+        };
+        let mut state = lock(&run.state);
+        run.flush(&mut state);
+        drop(state);
+        run
     }
 
-    /// Rebuilds a record written by an earlier Core instance from its facts.
-    /// Any unreadable fact makes the whole record unreadable.
-    pub(crate) fn load(dir: PathBuf, key: &str) -> Result<Self, String> {
-        let record: Accepted =
-            store::read_fact(&dir, store::REQUEST)?.ok_or("`request.json` is missing")?;
-        if store::record_key(&record.request.caller, &record.request.request_id) != key {
-            return Err("`request.json` names a different identity than its directory".into());
-        }
-        let cancel: Option<CancelInfo> = store::read_fact(&dir, store::CANCEL)?;
-        let outcome: Option<Outcome> = store::read_fact(&dir, store::OUTCOME)?;
-        let dispatch: Option<Dispatch> = store::read_fact(&dir, store::DISPATCH)?;
-        let spawned: Option<Spawned> = store::read_fact(&dir, store::SPAWNED)?;
-        let limit = record.stream_limit;
-        let mut save_outcome = false;
-        let state = if let Some(outcome) = outcome {
-            State {
-                status: outcome.status,
-                cancel: outcome.cancel.or(cancel),
-                stdout: outcome.stdout,
-                stderr: outcome.stderr,
-                pending: Vec::new(),
-                unsaved: None,
-            }
-        } else if dispatch.is_none() {
-            // The dispatch fact is synced before any process is started.
-            save_outcome = true;
-            State {
-                status: RunStatus::NotStarted {
-                    reason: "the Core instance that accepted this request stopped before \
-                             dispatching it; no process was started"
-                        .into(),
-                },
-                cancel,
-                stdout: empty_stream(limit),
-                stderr: empty_stream(limit),
-                pending: Vec::new(),
-                unsaved: None,
-            }
-        } else {
-            let dispatched_at = dispatch.map_or(record.accepted_at, |d| d.at);
-            let note = "the Core instance holding this run stopped; later output was not \
-                        retained"
-                .to_owned();
-            let stream = |stream: Stream| {
-                let retained = fs::metadata(dir.join(stream.file_name())).map_or(0, |m| m.len());
-                StreamInfo {
-                    retained_bytes: retained.min(limit),
-                    observed_bytes: retained,
-                    limit_bytes: limit,
-                    eof: false,
-                    retention_error: Some(note.clone()),
-                }
-            };
-            let (present, observed_at) = probe(&dir);
-            State {
-                status: RunStatus::Detached {
-                    dispatched_at,
-                    pid: spawned.as_ref().map(|s| s.pid),
-                    spawned_at: spawned.as_ref().map(|s| s.spawned_at),
-                    present,
+    fn status(state: &State) -> RunStatus {
+        match &state.record.execution {
+            Knowledge::Known {
+                value: ExecutionFact::NotStarted { reason },
+                ..
+            } => RunStatus::NotStarted {
+                reason: reason.clone(),
+            },
+            Knowledge::Known {
+                value:
+                    ExecutionFact::ExitObserved {
+                        pid,
+                        spawned_at,
+                        exit,
+                    },
+                observed_at,
+                ..
+            } => RunStatus::Finished {
+                pid: *pid,
+                spawned_at: *spawned_at,
+                exit: exit.clone(),
+                exit_observed_at: *observed_at,
+                group_released: state.record.group_released.value() == Some(&true),
+            },
+            Knowledge::Known {
+                value: ExecutionFact::SpawnObserved { pid, spawned_at },
+                ..
+            } if state.held => RunStatus::Running {
+                pid: *pid,
+                spawned_at: *spawned_at,
+            },
+            _ if state.held => RunStatus::Starting,
+            _ => {
+                let (pid, spawned_at) = match state.record.execution.value() {
+                    Some(ExecutionFact::SpawnObserved { pid, spawned_at }) => {
+                        (Some(*pid), Some(*spawned_at))
+                    }
+                    _ => (None, None),
+                };
+                let at = match state.record.dispatch {
+                    Knowledge::Known { observed_at, .. } => observed_at,
+                    _ => state.record.accepted_at,
+                };
+                let observed_at = match state.record.run_lock {
+                    Knowledge::Known { observed_at, .. } => observed_at,
+                    _ => state.record.accepted_at,
+                };
+                RunStatus::Detached {
+                    dispatched_at: at,
+                    pid,
+                    spawned_at,
+                    present: state.record.run_lock.value() == Some(&true),
                     observed_at,
-                },
-                cancel,
-                stdout: stream(Stream::Stdout),
-                stderr: stream(Stream::Stderr),
-                pending: Vec::new(),
-                unsaved: None,
+                }
             }
-        };
-        let run = Self::with_state(record, dir, state);
-        if save_outcome {
-            let mut state = lock(&run.state);
-            mark(&mut state, Pending::Outcome);
-            run.flush(&mut state);
         }
-        Ok(run)
     }
 
     fn view_of(&self, state: &State) -> RunView {
+        let mut operation = state.record.clone();
+        operation.retention(state.held, !state.pending.is_empty());
         RunView {
             run_id: self.run_id.clone(),
             request: self.request.clone(),
-            accepted_at: self.accepted_at,
-            status: state.status.clone(),
-            cancel: state.cancel.clone(),
-            stdout: state.stdout.clone(),
-            stderr: state.stderr.clone(),
+            accepted_at: operation.accepted_at,
+            status: Self::status(state),
+            cancel: operation.cancellation.clone(),
+            stdout: operation.outputs.stdout.info.clone(),
+            stderr: operation.outputs.stderr.info.clone(),
             unsaved: state.unsaved.clone(),
+            operation,
+            held: state.held,
         }
     }
 
-    /// Current facts. Retries unsaved facts and re-observes a detached run.
-    pub(crate) fn view(&self) -> RunView {
+    pub(crate) fn view(&self) -> Result<RunView, LookupError> {
         let mut state = lock(&self.state);
-        self.refresh(&mut state);
-        self.view_of(&state)
+        self.refresh(&mut state)?;
+        Ok(self.view_of(&state))
     }
 
-    pub(crate) fn wait(&self, timeout: Duration) -> RunView {
+    pub(crate) fn wait(&self, timeout: Duration) -> Result<RunView, LookupError> {
         let deadline = Instant::now() + timeout;
         let mut state = lock(&self.state);
         loop {
-            self.refresh(&mut state);
+            self.refresh(&mut state)?;
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if state.status.is_terminal() || remaining.is_zero() {
-                return self.view_of(&state);
+            if (!state.held && Self::status(&state).is_terminal()) || remaining.is_zero() {
+                return Ok(self.view_of(&state));
             }
-            // A detached run changes without notification, so it is re-observed.
-            let slice = match state.status {
-                RunStatus::Detached { .. } => remaining.min(POLL_INTERVAL),
-                _ => remaining,
+            // Detached observations have no holder to send a notification.
+            let slice = if state.held {
+                remaining
+            } else {
+                remaining.min(POLL_INTERVAL)
             };
             state = self
                 .changed
                 .wait_timeout(state, slice)
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .unwrap_or_else(|p| p.into_inner())
                 .0;
         }
     }
 
-    pub(crate) fn request_cancel(&self, reason: CancelReason) -> RunView {
+    pub(crate) fn request_cancel(&self, reason: CancelReason) -> Result<RunView, LookupError> {
         let mut state = lock(&self.state);
-        self.refresh(&mut state);
-        // A detached run has no holder in this instance: nothing could act on
-        // a cancel, so none is recorded.
-        let held = matches!(
-            state.status,
-            RunStatus::Starting | RunStatus::Running { .. }
-        );
-        if held && state.cancel.is_none() {
-            let cancel = CancelInfo {
+        self.refresh(&mut state)?;
+        if state.held
+            && !matches!(
+                state.record.execution.value(),
+                Some(ExecutionFact::ExitObserved { .. })
+            )
+            && state.record.cancellation.is_none()
+        {
+            state.record.cancellation = Some(CancelInfo {
                 reason,
                 requested_at: SystemTime::now(),
                 term_sent_at: None,
                 kill_sent_at: None,
-            };
-            state.cancel = Some(cancel);
-            mark(&mut state, Pending::Cancel);
+                signal_error: None,
+            });
+            mark(&mut state, Fact::Cancel);
             self.flush(&mut state);
             fault::point("cancel-saved");
+        }
+        Ok(self.view_of(&state))
+    }
+
+    /// Shutdown must still stop owned native resources when their store is damaged.
+    pub(crate) fn shutdown_stop(&self) -> RunView {
+        let mut state = lock(&self.state);
+        if state.held
+            && !matches!(
+                state.record.execution.value(),
+                Some(ExecutionFact::ExitObserved { .. })
+            )
+            && state.record.cancellation.is_none()
+        {
+            state.record.cancellation = Some(CancelInfo {
+                reason: CancelReason::Shutdown,
+                requested_at: SystemTime::now(),
+                term_sent_at: None,
+                kill_sent_at: None,
+                signal_error: None,
+            });
+            mark(&mut state, Fact::Cancel);
+            self.flush(&mut state);
+        }
+        self.view_of(&state)
+    }
+
+    /// Wait on the actually owned holder even when durable queries fail.
+    pub(crate) fn wait_held(&self, timeout: Duration) -> RunView {
+        let deadline = Instant::now() + timeout;
+        let mut state = lock(&self.state);
+        while state.held {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            state = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
         }
         self.view_of(&state)
     }
@@ -403,204 +455,304 @@ impl RunShared {
         offset: u64,
         max_bytes: usize,
     ) -> Result<OutputChunk, ReadError> {
-        let (info, run_terminal) = {
-            let mut state = lock(&self.state);
-            self.refresh(&mut state);
-            let info = match stream {
-                Stream::Stdout => state.stdout.clone(),
-                Stream::Stderr => state.stderr.clone(),
-            };
-            (info, state.status.is_terminal())
+        let mut state = lock(&self.state);
+        self.refresh(&mut state)?;
+        let output = match stream {
+            Stream::Stdout => &state.record.outputs.stdout,
+            Stream::Stderr => &state.record.outputs.stderr,
         };
-        if offset > info.retained_bytes {
+        if offset > output.info.retained_bytes {
             return Err(ReadError::OffsetBeyondRetained {
                 offset,
-                retained: info.retained_bytes,
+                retained: output.info.retained_bytes,
             });
         }
-        let len = (info.retained_bytes - offset).min(max_bytes as u64) as usize;
-        let mut bytes = vec![0; len];
-        if len > 0 {
-            let io_error = |error: io::Error| ReadError::Io(error.to_string());
-            let mut file = File::open(self.dir.join(stream.file_name())).map_err(io_error)?;
-            file.seek(SeekFrom::Start(offset)).map_err(io_error)?;
-            file.read_exact(&mut bytes).map_err(io_error)?;
+        let end = offset
+            .saturating_add(max_bytes as u64)
+            .min(output.info.retained_bytes);
+        let mut bytes = Vec::with_capacity((end - offset) as usize);
+        let mut at = 0;
+        for blob in &output.blobs {
+            let blob_end = at + blob.bytes;
+            if at < end && blob_end > offset {
+                let data = self
+                    .store
+                    .read_blob(blob)
+                    .map_err(|e| ReadError::Io(e.to_string()))?;
+                let from = offset.saturating_sub(at) as usize;
+                let to = (end - at).min(blob.bytes) as usize;
+                bytes.extend_from_slice(&data[from..to]);
+            }
+            at = blob_end;
+            if at >= end {
+                break;
+            }
         }
         Ok(OutputChunk {
             stream,
             offset,
             bytes,
-            info,
-            run_terminal,
+            info: output.info.clone(),
+            run_terminal: !state.held && Self::status(&state).is_terminal(),
         })
     }
 
-    fn refresh(&self, state: &mut State) {
-        if !state.pending.is_empty() {
-            self.flush(state);
-        }
-        if let RunStatus::Detached {
-            present: present @ true,
-            observed_at,
-            ..
-        } = &mut state.status
+    fn refresh(&self, state: &mut State) -> Result<(), LookupError> {
+        // Always check the durable row: a damaged/missing record cannot be
+        // silently hidden by a cache, even during a running process.
+        let stored = self
+            .store
+            .get(&self.request.caller, &self.request.request_id)
+            .map_err(lookup_error)?
+            .ok_or_else(|| LookupError::RecordUnreadable {
+                reason: "accepted record disappeared; execution may already have happened".into(),
+            })?;
+        if stored.accepted.run_id != self.run_id
+            || stored.accepted.fingerprint != self.fingerprint
+            || stored.accepted.request != self.request
         {
-            (*present, *observed_at) = probe(&self.dir);
+            return Err(LookupError::RecordUnreadable {
+                reason: "immutable acceptance changed".into(),
+            });
         }
+        self.flush(state);
+        if !state.held
+            && matches!(
+                state.record.execution.value(),
+                None | Some(ExecutionFact::SpawnObserved { .. })
+            )
+            && state.record.dispatch.value() == Some(&DispatchFact::Attempted)
+        {
+            state.record.run_lock = match probe(&self.dir) {
+                Ok(present) => Knowledge::known(present, FactSource::RunLock),
+                Err(error) => Knowledge::unknown(
+                    format!("run lock cannot be observed: {error}"),
+                    SystemTime::now(),
+                ),
+            };
+        }
+        Ok(())
     }
 
-    /// Writes every pending fact; those that fail stay pending and are reported.
     fn flush(&self, state: &mut State) {
         let mut errors = Vec::new();
-        let pending = std::mem::take(&mut state.pending);
-        for fact in pending {
-            let (name, result) = match &fact {
-                Pending::Spawned => {
-                    let spawned = match state.status {
-                        RunStatus::Running { pid, spawned_at }
-                        | RunStatus::Finished {
-                            pid, spawned_at, ..
-                        } => Spawned { pid, spawned_at },
-                        _ => continue,
-                    };
-                    (
-                        store::SPAWNED,
-                        store::write_fact(&self.dir, store::SPAWNED, &spawned),
-                    )
+        for fact in std::mem::take(&mut state.pending) {
+            match self.store.save(&state.record, fact) {
+                Ok(revision) => state.record.revision = revision,
+                Err(error) => {
+                    errors.push(format!("{} could not be saved: {error}", fact.column()));
+                    state.pending.push(fact);
                 }
-                Pending::Cancel => match &state.cancel {
-                    Some(cancel) => (
-                        store::CANCEL,
-                        store::write_fact(&self.dir, store::CANCEL, cancel),
-                    ),
-                    None => continue,
-                },
-                Pending::Outcome => {
-                    let outcome = Outcome {
-                        status: state.status.clone(),
-                        cancel: state.cancel.clone(),
-                        stdout: state.stdout.clone(),
-                        stderr: state.stderr.clone(),
-                    };
-                    (
-                        store::OUTCOME,
-                        store::write_fact(&self.dir, store::OUTCOME, &outcome),
-                    )
-                }
-            };
-            if let Err(error) = result {
-                errors.push(format!("`{name}` could not be saved: {error}"));
-                state.pending.push(fact);
             }
         }
         state.unsaved = (!errors.is_empty()).then(|| errors.join("; "));
     }
 
-    fn cancel_requested(&self) -> bool {
-        lock(&self.state).cancel.is_some()
+    fn begin_dispatch(&self) -> Result<(), String> {
+        let mut state = lock(&self.state);
+        state.record.dispatch = Knowledge::known(DispatchFact::Attempted, FactSource::Core);
+        // A failure here never calls the executor, even if the commit's reply
+        // was lost. A later submit reads the acceptance and never replays it.
+        mark(&mut state, Fact::Dispatch);
+        self.flush(&mut state);
+        if state.pending.contains(&Fact::Dispatch) {
+            Err(state
+                .unsaved
+                .clone()
+                .unwrap_or_else(|| "dispatch marker was not saved".into()))
+        } else {
+            Ok(())
+        }
     }
 
-    fn note_signal(&self, signal: i32) {
+    fn cancel_requested(&self) -> bool {
+        lock(&self.state).record.cancellation.is_some()
+    }
+
+    fn note_signal(&self, signal: i32, result: io::Result<()>) {
         let mut state = lock(&self.state);
-        if let Some(cancel) = state.cancel.as_mut() {
-            let now = Some(SystemTime::now());
-            if signal == libc::SIGKILL {
-                cancel.kill_sent_at = now;
-            } else {
-                cancel.term_sent_at = now;
+        if let Some(cancel) = state.record.cancellation.as_mut() {
+            match result {
+                Ok(()) => {
+                    if signal == libc::SIGKILL {
+                        cancel.kill_sent_at.get_or_insert_with(SystemTime::now);
+                    } else {
+                        cancel.term_sent_at.get_or_insert_with(SystemTime::now);
+                    }
+                }
+                Err(error) => {
+                    cancel.signal_error = Some(format!("signal {signal} failed: {error}"));
+                }
             }
-            mark(&mut state, Pending::Cancel);
+            mark(&mut state, Fact::Cancel);
             self.flush(&mut state);
         }
     }
 
-    /// Whether this instance holds the run's process (or is starting it).
     pub(crate) fn held(&self) -> bool {
-        matches!(
-            lock(&self.state).status,
-            RunStatus::Starting | RunStatus::Running { .. }
-        )
+        lock(&self.state).held
     }
 
     fn set_running(&self, pid: u32) -> SystemTime {
         let spawned_at = SystemTime::now();
         let mut state = lock(&self.state);
-        state.status = RunStatus::Running { pid, spawned_at };
-        mark(&mut state, Pending::Spawned);
+        state.record.execution = Knowledge::Known {
+            value: ExecutionFact::SpawnObserved { pid, spawned_at },
+            observed_at: spawned_at,
+            source: FactSource::NativeProcess,
+        };
+        mark(&mut state, Fact::Execution);
         fault::point("spawned");
         self.flush(&mut state);
         spawned_at
     }
 
-    fn set_streams(&self, stdout: &StreamInfo, stderr: &StreamInfo) {
+    fn record_output(
+        &self,
+        stream: Stream,
+        data: &[u8],
+        eof: bool,
+        error: Option<String>,
+    ) -> StreamInfo {
         let mut state = lock(&self.state);
-        state.stdout = stdout.clone();
-        state.stderr = stderr.clone();
+        let output = match stream {
+            Stream::Stdout => &mut state.record.outputs.stdout,
+            Stream::Stderr => &mut state.record.outputs.stderr,
+        };
+        output.observed_at = SystemTime::now();
+        output.source = FactSource::NativeProcess;
+        output.info.observed_bytes = output.info.observed_bytes.saturating_add(data.len() as u64);
+        output.info.eof |= eof;
+        if let Some(error) = error {
+            output.info.retention_error.get_or_insert(error);
+        }
+        let keep = (output
+            .info
+            .limit_bytes
+            .saturating_sub(output.info.retained_bytes))
+        .min(data.len() as u64) as usize;
+        if keep > 0 && output.info.retention_error.is_none() {
+            if output.blobs.len() >= self.chunk_limit {
+                output.info.retention_error = Some(format!(
+                    "output artifact chunk limit {} reached; further bytes are counted but not retained",
+                    self.chunk_limit
+                ));
+            } else {
+                match self.store.blob(&self.run_id, stream.kind(), &data[..keep]) {
+                    Ok(blob) => {
+                        output.info.retained_bytes += blob.bytes;
+                        output.blobs.push(blob);
+                    }
+                    Err(error) => {
+                        output.info.retention_error =
+                            Some(format!("retaining output failed: {error}"));
+                    }
+                }
+            }
+        }
+        let info = output.info.clone();
+        mark(
+            &mut state,
+            match stream {
+                Stream::Stdout => Fact::Stdout,
+                Stream::Stderr => Fact::Stderr,
+            },
+        );
+        self.flush(&mut state);
+        info
     }
 
     fn not_started(&self, reason: String, running: &AtomicUsize) {
         running.fetch_sub(1, Ordering::SeqCst);
         let mut state = lock(&self.state);
-        state.status = RunStatus::NotStarted { reason };
-        mark(&mut state, Pending::Outcome);
+        state.held = false;
+        state.record.execution =
+            Knowledge::known(ExecutionFact::NotStarted { reason }, FactSource::Core);
+        state.record.group_released = Knowledge::known(true, FactSource::Core);
+        mark(&mut state, Fact::Execution);
+        mark(&mut state, Fact::Release);
         self.flush(&mut state);
         self.changed.notify_all();
     }
 
-    fn finish(&self, status: RunStatus, streams: (StreamInfo, StreamInfo), running: &AtomicUsize) {
-        // Free the process slot before waiters can observe the terminal state.
-        running.fetch_sub(1, Ordering::SeqCst);
+    fn observe_exit(&self, pid: u32, spawned_at: SystemTime, exit: Exit) {
         let mut state = lock(&self.state);
-        state.status = status;
-        (state.stdout, state.stderr) = streams;
-        mark(&mut state, Pending::Outcome);
+        state.record.execution = Knowledge::known(
+            ExecutionFact::ExitObserved {
+                pid,
+                spawned_at,
+                exit,
+            },
+            FactSource::NativeProcess,
+        );
+        mark(&mut state, Fact::Execution);
         fault::point("exited");
         self.flush(&mut state);
+        fault::point("exit-saved");
+        self.changed.notify_all();
+    }
+
+    fn finish(&self, released: bool, running: &AtomicUsize) {
+        running.fetch_sub(1, Ordering::SeqCst);
+        let mut state = lock(&self.state);
+        state.held = false;
+        state.record.group_released = Knowledge::known(released, FactSource::NativeProcess);
+        mark(&mut state, Fact::Release);
+        self.flush(&mut state);
         self.changed.notify_all();
     }
 }
 
-/// Whether a process of the run still holds its run lock, and when that was
-/// observed. A lock that cannot be probed counts as possibly held.
-fn probe(dir: &Path) -> (bool, SystemTime) {
-    let present = match File::open(dir.join(store::RUN_LOCK)) {
-        Ok(file) => !matches!(store::try_lock(&file), Ok(true)),
-        Err(_) => true,
-    };
-    (present, SystemTime::now())
+pub(crate) fn lookup_error(error: store::StoreError) -> LookupError {
+    match error {
+        store::StoreError::Unreadable(reason) => LookupError::RecordUnreadable { reason },
+        error => LookupError::Storage(error.to_string()),
+    }
 }
 
-/// Starts the accepted run and hands its process to a holder thread. Every
-/// outcome ends in a terminal status that releases the reserved process slot.
-/// The record is already committed, so no outcome re-dispatches it.
+fn probe(dir: &Path) -> io::Result<bool> {
+    if !fs::symlink_metadata(dir)?.file_type().is_dir() {
+        return Err(io::Error::other("run lock directory was replaced"));
+    }
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(dir.join(store::RUN_LOCK))?;
+    Ok(!store::try_lock(&file)?)
+}
+
 pub(crate) fn dispatch(
     run: &Arc<RunShared>,
     executor: &Executor,
     args: &[String],
     limits: &Limits,
     running: &Arc<AtomicUsize>,
-    store_lock: &Arc<File>,
 ) {
-    let files = open_run_files(&run.dir).and_then(|files| {
-        // Synced before the process exists, so a crash after this is never
-        // mistaken for "never dispatched".
-        store::write_fact(
-            &run.dir,
-            store::DISPATCH,
-            &Dispatch {
-                at: SystemTime::now(),
-            },
-        )?;
-        Ok(files)
-    });
-    let (lock_file, stdout_file, stderr_file) = match files {
-        Ok(files) => files,
+    let prepared = (|| -> Result<File, String> {
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&run.dir)
+            .map_err(|e| e.to_string())?;
+        let lock_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(run.dir.join(store::RUN_LOCK))
+            .map_err(|e| e.to_string())?;
+        if !store::try_lock(&lock_file).map_err(|e| e.to_string())? {
+            return Err("another process holds this run's lock".into());
+        }
+        let script = lock(&run.state).record.script.clone();
+        run.store.verify_blob(&script).map_err(|e| e.to_string())?;
+        run.begin_dispatch()?;
+        Ok(lock_file)
+    })();
+    let lock_file = match prepared {
+        Ok(file) => file,
         Err(error) => {
-            let reason = format!(
-                "run files could not be prepared in `{}`: {error}",
-                run.dir.display()
-            );
-            return run.not_started(reason, running);
+            return run.not_started(format!("run files could not be prepared: {error}"), running);
         }
     };
     fault::point("dispatched");
@@ -610,22 +762,26 @@ pub(crate) fn dispatch(
             running,
         );
     }
-    // The run lock is the task's stdin: an empty file, so reads see EOF as
-    // with /dev/null. Its description is inherited by the process group and
-    // released only when the last member exits, so a later instance can tell
-    // whether one is still there. No pre_exec hook is used: std can then spawn
-    // without a fork window that would copy other descriptors, such as the
-    // store lock, into a half-started child.
     let stdin = match lock_file.try_clone() {
         Ok(file) => file,
         Err(error) => {
             return run.not_started(format!("run lock could not be shared: {error}"), running);
         }
     };
+    let script = lock(&run.state).record.script.clone();
+    let script_path = match run.store.blob_path(&script) {
+        Ok(path) => path,
+        Err(error) => {
+            return run.not_started(
+                format!("script snapshot could not be resolved: {error}"),
+                running,
+            );
+        }
+    };
     let mut command = Command::new(&run.request.program);
     command
         .args(&executor.args)
-        .arg(run.dir.join(store::SCRIPT))
+        .arg(script_path)
         .args(args)
         .current_dir(&run.request.workdir_resolved)
         .stdin(Stdio::from(stdin))
@@ -640,10 +796,19 @@ pub(crate) fn dispatch(
     };
     let pid = child.id();
     let spawned_at = run.set_running(pid);
-    let limit = limits.max_stream_bytes;
     let pumps = [
-        Pump::new(child.stdout.take().map(OwnedFd::from), stdout_file, limit),
-        Pump::new(child.stderr.take().map(OwnedFd::from), stderr_file, limit),
+        Pump::new(
+            child.stdout.take().map(OwnedFd::from),
+            Arc::clone(run),
+            Stream::Stdout,
+            limits.max_stream_bytes,
+        ),
+        Pump::new(
+            child.stderr.take().map(OwnedFd::from),
+            Arc::clone(run),
+            Stream::Stderr,
+            limits.max_stream_bytes,
+        ),
     ];
     let holder = Holder {
         run: Arc::clone(run),
@@ -654,50 +819,29 @@ pub(crate) fn dispatch(
         limits: limits.clone(),
         running: Arc::clone(running),
         lock: Some(lock_file),
-        _store: Arc::clone(store_lock),
     };
     let held = thread::Builder::new()
         .name(format!("rho-run-{}", run.run_id))
         .spawn(move || holder.hold());
     if let Err(error) = held {
-        // The holder and its Child were dropped unreaped, so the group id is still reserved.
         let pgid = pid as i32;
         let _ = os::signal_group(pgid, libc::SIGKILL);
         let exit = match os::reap(pgid) {
             Ok(raw) => exit_of(ExitStatus::from_raw(raw)),
             Err(error) => Exit::Unknown(error.to_string()),
         };
-        let mut streams = {
-            let state = lock(&run.state);
-            (state.stdout.clone(), state.stderr.clone())
-        };
-        let note = format!("output not retained: no thread could hold this run: {error}");
-        streams.0.retention_error = Some(note.clone());
-        streams.1.retention_error = Some(note);
-        let status = RunStatus::Finished {
-            pid,
-            spawned_at,
-            exit,
-            exit_observed_at: SystemTime::now(),
-            group_released: !os::group_exists(pgid),
-        };
-        run.finish(status, streams, running);
+        run.observe_exit(pid, spawned_at, exit);
+        for stream in [Stream::Stdout, Stream::Stderr] {
+            run.record_output(
+                stream,
+                &[],
+                false,
+                Some(format!("output not retained: no holder thread: {error}")),
+            );
+        }
+        run.finish(!os::group_exists(pgid), running);
     }
 }
-
-/// Opens the run lock and the two output files of a committed record. The
-/// script snapshot and the directory were written before the commit.
-fn open_run_files(dir: &Path) -> io::Result<(File, File, File)> {
-    let open = |name: &str| fs::OpenOptions::new().write(true).open(dir.join(name));
-    let lock_file = fs::File::open(dir.join(store::RUN_LOCK))?;
-    if !store::try_lock(&lock_file)? {
-        return Err(io::Error::other(
-            "another process still holds this run's lock",
-        ));
-    }
-    Ok((lock_file, open(store::STDOUT)?, open(store::STDERR)?))
-}
-
 fn exit_of(status: ExitStatus) -> Exit {
     match (status.code(), status.signal()) {
         (Some(code), _) => Exit::Code(code),
@@ -715,10 +859,8 @@ struct Holder {
     pumps: [Pump; 2],
     limits: Limits,
     running: Arc<AtomicUsize>,
-    /// Shared with the process group; released before the outcome is saved.
+    /// Shared with the process group; releasing this is not a native exit fact.
     lock: Option<File>,
-    /// Keeps the store locked while this run is still held.
-    _store: Arc<File>,
 }
 
 impl Holder {
@@ -727,7 +869,6 @@ impl Holder {
         let mut buffer = vec![0; READ_BUFFER];
         let mut term_sent: Option<Instant> = None;
         let mut kill_sent = false;
-        let mut exited: Option<(Exit, SystemTime)> = None;
         let mut close_deadline: Option<Instant> = None;
         let mut group_released = false;
         loop {
@@ -736,10 +877,7 @@ impl Holder {
                     .saturating_duration_since(Instant::now())
                     .min(POLL_INTERVAL)
             });
-            if self.pump(&mut buffer, timeout) {
-                self.run
-                    .set_streams(&self.pumps[0].info, &self.pumps[1].info);
-            }
+            self.pump(&mut buffer, timeout);
             if let Some(deadline) = close_deadline {
                 group_released = group_released || !os::group_exists(pgid);
                 let closed = self.pumps.iter().all(Pump::closed);
@@ -751,39 +889,36 @@ impl Holder {
             if self.run.cancel_requested() {
                 match term_sent {
                     None => {
-                        let _ = os::signal_group(pgid, libc::SIGTERM);
-                        self.run.note_signal(libc::SIGTERM);
+                        let result = os::signal_group(pgid, libc::SIGTERM);
+                        self.run.note_signal(libc::SIGTERM, result);
                         term_sent = Some(Instant::now());
                     }
                     Some(at) if !kill_sent && at.elapsed() >= self.limits.stop_grace => {
-                        let _ = os::signal_group(pgid, libc::SIGKILL);
-                        self.run.note_signal(libc::SIGKILL);
+                        let result = os::signal_group(pgid, libc::SIGKILL);
+                        self.run.note_signal(libc::SIGKILL, result);
                         kill_sent = true;
                     }
                     Some(_) => {}
                 }
             }
             if let Some(exit) = self.observe_exit() {
-                exited = Some((exit, SystemTime::now()));
+                self.run.observe_exit(self.pid, self.spawned_at, exit);
                 close_deadline = Some(Instant::now() + self.limits.output_close_grace);
             }
         }
-        let (exit, exit_observed_at) =
-            exited.expect("holding ends only after the exit is observed");
-        let status = RunStatus::Finished {
-            pid: self.pid,
-            spawned_at: self.spawned_at,
-            exit,
-            exit_observed_at,
-            group_released,
-        };
-        // Retained bytes are made durable before the outcome that counts them.
-        for pump in &self.pumps {
-            let _ = pump.file.sync_all();
+        for pump in &mut self.pumps {
+            if !pump.closed() {
+                pump.info = self.run.record_output(
+                    pump.stream,
+                    &[],
+                    false,
+                    Some("output close grace exceeded; later bytes are not retained".into()),
+                );
+                pump.pipe = None;
+            }
         }
-        let streams = (self.pumps[0].info.clone(), self.pumps[1].info.clone());
         drop(self.lock.take());
-        self.run.finish(status, streams, &self.running);
+        self.run.finish(group_released, &self.running);
     }
 
     /// Observes the main process's exit; if it exited, releases the rest of its
@@ -834,57 +969,43 @@ impl Holder {
     }
 }
 
-/// Copies one output pipe into its retained file, up to the stream limit.
+/// Drains one native pipe. Retained bytes and counters are committed separately
+/// from the exit, cancellation and release dimensions.
 struct Pump {
     pipe: Option<File>,
-    file: File,
+    run: Arc<RunShared>,
+    stream: Stream,
     info: StreamInfo,
 }
 
 impl Pump {
-    fn new(pipe: Option<OwnedFd>, file: File, limit: u64) -> Self {
+    fn new(pipe: Option<OwnedFd>, run: Arc<RunShared>, stream: Stream, limit: u64) -> Self {
         Self {
             pipe: pipe.map(File::from),
-            file,
+            run,
+            stream,
             info: empty_stream(limit),
         }
     }
-
     fn closed(&self) -> bool {
         self.pipe.is_none()
     }
-
     fn fd(&self) -> Option<RawFd> {
         self.pipe.as_ref().map(AsRawFd::as_raw_fd)
     }
-
     fn read_once(&mut self, buffer: &mut [u8]) -> bool {
         let Some(pipe) = self.pipe.as_mut() else {
             return false;
         };
         match pipe.read(buffer) {
             Ok(0) => {
-                self.info.eof = true;
                 self.pipe = None;
+                self.info = self.run.record_output(self.stream, &[], true, None);
             }
             Ok(read) => {
-                self.info.observed_bytes += read as u64;
-                let room = self
-                    .info
-                    .limit_bytes
-                    .saturating_sub(self.info.retained_bytes);
-                let keep = (read as u64).min(room) as usize;
-                if keep > 0 && self.info.retention_error.is_none() {
-                    match self.file.write_all(&buffer[..keep]) {
-                        Ok(()) => self.info.retained_bytes += keep as u64,
-                        Err(error) => {
-                            self.info.retention_error = Some(format!(
-                                "retaining output failed after {} bytes: {error}",
-                                self.info.retained_bytes
-                            ));
-                        }
-                    }
-                }
+                self.info = self
+                    .run
+                    .record_output(self.stream, &buffer[..read], false, None);
             }
             Err(error)
                 if matches!(
@@ -895,10 +1016,13 @@ impl Pump {
                 return false;
             }
             Err(error) => {
-                self.info
-                    .retention_error
-                    .get_or_insert_with(|| format!("reading output failed: {error}"));
                 self.pipe = None;
+                self.info = self.run.record_output(
+                    self.stream,
+                    &[],
+                    false,
+                    Some(format!("reading output failed: {error}")),
+                );
             }
         }
         true

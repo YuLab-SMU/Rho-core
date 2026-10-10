@@ -30,6 +30,11 @@ pub(crate) fn has_exited(pid: i32) -> io::Result<bool> {
 
 /// Sends `signal` to every member of process group `pgid`.
 pub(crate) fn signal_group(pgid: i32, signal: i32) -> io::Result<()> {
+    if signal == libc::SIGTERM
+        && let Some(error) = crate::fault::io_failure("signal-term")
+    {
+        return Err(error);
+    }
     // SAFETY: kill has no memory-safety preconditions.
     if unsafe { libc::kill(-pgid, signal) } == 0 {
         Ok(())

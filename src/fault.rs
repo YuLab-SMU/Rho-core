@@ -23,3 +23,15 @@ pub(crate) fn point(name: &str) {
 #[cfg(not(feature = "fault-injection"))]
 #[inline(always)]
 pub(crate) fn point(_name: &str) {}
+
+/// Deterministic syscall failure for the owned-process cancellation experiment.
+#[cfg(feature = "fault-injection")]
+pub(crate) fn io_failure(name: &str) -> Option<std::io::Error> {
+    (std::env::var("RHO_CORE_FAIL_AT").ok().as_deref() == Some(name))
+        .then(|| std::io::Error::from_raw_os_error(libc::EIO))
+}
+
+#[cfg(not(feature = "fault-injection"))]
+pub(crate) fn io_failure(_name: &str) -> Option<std::io::Error> {
+    None
+}

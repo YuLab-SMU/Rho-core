@@ -63,7 +63,7 @@ impl Paths {
             request_id: ID.into(),
             executor: "sh".into(),
             workdir: "work".into(),
-            code: GATED.into(),
+            code: fs::read_to_string(self.root.join("task.code")).unwrap_or_else(|_| GATED.into()),
             args: vec![
                 self.started.display().to_string(),
                 self.release.display().to_string(),
@@ -120,11 +120,17 @@ fn start_host(paths: &Paths, crash_at: Option<&str>) -> Child {
 }
 
 fn start_host_with(paths: &Paths, crash_at: Option<&str>, cancel: bool) -> Child {
+    host_command(paths, crash_at, cancel).spawn().unwrap()
+}
+
+fn host_command(paths: &Paths, crash_at: Option<&str>, cancel: bool) -> Command {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", "host_process", "--nocapture", "--test-threads=1"])
         .env("RHO_TEST_HOST_ROOT", &paths.root)
         .env_remove("RHO_CORE_CRASH_AT")
+        .env_remove("RHO_CORE_FAIL_AT")
+        .env_remove("RHO_TEST_HOST_SCENARIO")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
@@ -136,7 +142,7 @@ fn start_host_with(paths: &Paths, crash_at: Option<&str>, cancel: bool) -> Child
     } else {
         command.env_remove("RHO_TEST_HOST_CANCEL");
     }
-    command.spawn().unwrap()
+    command
 }
 
 /// Waits for the host to die by SIGKILL, as a crash point or the test made it.
@@ -171,8 +177,40 @@ fn host_process() {
         return;
     };
     let paths = Paths::new(Path::new(&root));
-    let core = Core::open(paths.config()).unwrap();
+    let scenario = std::env::var("RHO_TEST_HOST_SCENARIO").unwrap_or_default();
+    let mut config = paths.config();
+    if scenario == "output" {
+        config.limits.max_stream_bytes = 10;
+    }
+    if scenario == "signal" {
+        config.limits.stop_grace = Duration::from_millis(50);
+    }
+    let core = Core::open(config).unwrap();
     core.submit(CALLER, paths.request()).unwrap();
+    if scenario == "delete" {
+        assert!(core.wait(CALLER, ID, PATIENCE).unwrap().is_terminal());
+        core.forget(CALLER, ID).unwrap();
+        panic!("delete crash point did not fire");
+    }
+    if scenario == "signal" {
+        paths.wait_started();
+        core.cancel(CALLER, ID).unwrap();
+        let view = core.wait(CALLER, ID, PATIENCE).unwrap();
+        assert!(view.is_terminal());
+        fs::write(
+            paths.root.join("signal-result.json"),
+            serde_json::to_vec(&view.operation).unwrap(),
+        )
+        .unwrap();
+        return;
+    }
+    if scenario == "output" {
+        let deadline = std::time::Instant::now() + PATIENCE;
+        while core.lookup(CALLER, ID).unwrap().stdout.observed_bytes < 20 {
+            assert!(std::time::Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
     if std::env::var_os("RHO_TEST_HOST_CANCEL").is_some() {
         paths.wait_started();
         core.cancel(CALLER, ID).unwrap();
@@ -257,7 +295,11 @@ fn crash_after_dispatch_before_spawn_is_reported_as_unknown_start() {
     reap_killed(start_host(&ex.paths, Some("dispatched")));
 
     let core = reopen(&ex.paths);
-    let view = core.wait(CALLER, ID, PATIENCE).unwrap();
+    let view = core.wait(CALLER, ID, Duration::from_millis(10)).unwrap();
+    assert!(
+        !view.is_terminal(),
+        "an unknown start is not confirmed completion"
+    );
     assert!(
         matches!(
             view.status,
@@ -301,7 +343,11 @@ fn crash_after_spawn_before_it_is_saved_keeps_the_process_detached() {
     duplicates_find_the_original(&core, &ex.paths);
 
     ex.paths.open_gate();
-    let view = core.wait(CALLER, ID, PATIENCE).unwrap();
+    let view = wait_lock_absent(&core);
+    assert!(
+        !view.is_terminal(),
+        "lock release does not prove native exit"
+    );
     assert!(
         matches!(view.status, RunStatus::Detached { present: false, .. }),
         "{:?}",
@@ -344,9 +390,47 @@ fn host_killed_while_holding_a_run_leaves_it_detached_not_rerun() {
 
     ex.paths.open_gate();
     let core = reopen(&ex.paths);
-    let view = core.wait(CALLER, ID, PATIENCE).unwrap();
-    assert!(view.is_terminal(), "{:?}", view.status);
+    let view = wait_lock_absent(&core);
+    assert!(
+        !view.is_terminal(),
+        "exit remains unknown: {:?}",
+        view.status
+    );
     assert_eq!(ex.paths.dispatches(), 1);
+}
+
+#[test]
+fn closing_inherited_stdin_does_not_confirm_exit_after_host_crash() {
+    let ex = experiment();
+    fs::write(
+        ex.paths.root.join("task.code"),
+        format!("exec 0</dev/null\n{GATED}"),
+    )
+    .unwrap();
+    let host = start_host(&ex.paths, None);
+    ex.paths.wait_started();
+    kill(&host, &ex.paths);
+    reap_killed(host);
+    let core = reopen(&ex.paths);
+    let view = core.lookup(CALLER, ID).unwrap();
+    let pid: i32 = fs::read_to_string(ex.paths.work.join("dispatches.log"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    // Release the fixture before asserting, including on the former implementation.
+    ex.paths.open_gate();
+    assert!(alive, "the native task is still alive");
+    assert!(
+        !view.is_terminal(),
+        "closing stdin is not evidence of native exit: {:?}",
+        view.status
+    );
+    assert!(matches!(
+        core.forget(CALLER, ID),
+        Err(ForgetError::NotTerminal(_))
+    ));
 }
 
 #[test]
@@ -405,23 +489,24 @@ fn a_finished_run_is_found_with_its_outcome_after_restart() {
 fn an_unreadable_record_blocks_its_identity_instead_of_rerunning() {
     let ex = experiment();
     reap_killed(start_host(&ex.paths, Some("committed")));
-    let records = ex.paths.state.join("records");
-    let record = fs::read_dir(&records)
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    fs::write(record.join("request.json"), b"{ not json").unwrap();
+    let record = ex.paths.state.join("core.sqlite3");
+    let db = rusqlite::Connection::open(&record).unwrap();
+    db.execute("UPDATE operations SET accepted='{ not json'", [])
+        .unwrap();
+    drop(db);
 
     let core = reopen(&ex.paths);
     assert_eq!(core.unreadable_records().len(), 1);
     assert_eq!(core.unreadable_records()[0].0, record);
+    assert!(
+        !matches!(core.lookup(CALLER, ID), Err(LookupError::NotFound { .. })),
+        "a corrupt accepted record must be reported as unreadable, never absent"
+    );
     let Err(SubmitError::RecordUnreadable { reason }) = core.submit(CALLER, ex.paths.request())
     else {
         panic!("an unreadable record must not authorize a new run");
     };
-    assert!(reason.contains("request.json"), "{reason}");
+    assert!(reason.contains("accepted"), "{reason}");
     assert_eq!(ex.paths.dispatches(), 0);
 }
 
@@ -445,19 +530,11 @@ fn the_state_dir_is_exclusive_and_bound_to_one_project() {
 #[test]
 fn forget_frees_only_terminal_records_and_then_the_identity_runs_again() {
     let ex = experiment();
-    let host = start_host(&ex.paths, None);
+    let mut config = ex.paths.config();
+    config.limits.max_records = 1;
+    let limited = Core::open(config.clone()).unwrap();
+    limited.submit(CALLER, ex.paths.request()).unwrap();
     ex.paths.wait_started();
-    kill(&host, &ex.paths);
-    reap_killed(host);
-
-    let core = reopen(&ex.paths);
-    // Records of earlier instances count toward max_records.
-    let limited = {
-        drop(core);
-        let mut config = ex.paths.config();
-        config.limits.max_records = 1;
-        Core::open(config).unwrap()
-    };
     let mut other = ex.paths.request();
     other.request_id = "other".into();
     assert_eq!(
@@ -474,6 +551,15 @@ fn forget_frees_only_terminal_records_and_then_the_identity_runs_again() {
 
     ex.paths.open_gate();
     assert!(limited.wait(CALLER, ID, PATIENCE).unwrap().is_terminal());
+    drop(limited);
+    // Durable completed records still consume capacity in the next instance.
+    let limited = Core::open(config).unwrap();
+    let mut other = ex.paths.request();
+    other.request_id = "other".into();
+    assert!(matches!(
+        limited.submit(CALLER, other),
+        Err(SubmitError::Capacity { .. })
+    ));
     limited.forget(CALLER, ID).unwrap();
     assert!(matches!(
         limited.lookup(CALLER, ID),
@@ -515,6 +601,191 @@ fn a_saved_cancel_survives_a_crash_but_is_not_reported_as_a_stop() {
         view.status
     );
     ex.paths.open_gate();
-    assert!(core.wait(CALLER, ID, PATIENCE).unwrap().is_terminal());
+    assert!(!wait_lock_absent(&core).is_terminal());
     assert_eq!(ex.paths.dispatches(), 1);
+}
+
+fn wait_lock_absent(core: &Core) -> rho_core::RunView {
+    let deadline = std::time::Instant::now() + PATIENCE;
+    loop {
+        let view = core.lookup(CALLER, ID).unwrap();
+        if view.operation.run_lock.value() == Some(&false) {
+            return view;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fixture never released its lock: {view:?}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn output_observations_and_truncation_survive_a_crash_before_exit() {
+    let ex = experiment();
+    fs::write(
+        ex.paths.root.join("task.code"),
+        format!("printf '12345678901234567890'\n{GATED}"),
+    )
+    .unwrap();
+    let host = host_command(&ex.paths, None, false)
+        .env("RHO_TEST_HOST_SCENARIO", "output")
+        .spawn()
+        .unwrap();
+    ex.paths.wait_started();
+    kill(&host, &ex.paths);
+    reap_killed(host);
+    let core = reopen(&ex.paths);
+    let view = core.lookup(CALLER, ID).unwrap();
+    assert_eq!(view.stdout.observed_bytes, 20);
+    assert_eq!(view.stdout.retained_bytes, 10);
+    assert!(view.stdout.truncated());
+    assert!(!view.stdout.eof);
+    assert!(!view.is_terminal());
+    assert_eq!(
+        core.read_output(CALLER, ID, Stream::Stdout, 0, 100)
+            .unwrap()
+            .bytes,
+        b"1234567890"
+    );
+    duplicates_find_the_original(&core, &ex.paths);
+    ex.paths.open_gate();
+    assert!(!wait_lock_absent(&core).is_terminal());
+    assert!(matches!(
+        core.forget(CALLER, ID),
+        Err(ForgetError::NotTerminal(_))
+    ));
+}
+
+#[test]
+fn an_interrupted_output_transaction_never_publishes_uncommitted_blob_bytes() {
+    let ex = experiment();
+    fs::write(
+        ex.paths.root.join("task.code"),
+        format!("printf 'partial'\n{GATED}"),
+    )
+    .unwrap();
+    let host = start_host(&ex.paths, Some("output-staged"));
+    // The native fixture is gated regardless of whether its pipe reader died.
+    ex.paths.wait_started();
+    reap_killed(host);
+    let core = reopen(&ex.paths);
+    let view = core.lookup(CALLER, ID).unwrap();
+    assert_eq!(view.stdout.retained_bytes, 0);
+    assert!(
+        core.read_output(CALLER, ID, Stream::Stdout, 0, 100)
+            .unwrap()
+            .bytes
+            .is_empty()
+    );
+    duplicates_find_the_original(&core, &ex.paths);
+    ex.paths.open_gate();
+    assert!(!wait_lock_absent(&core).is_terminal());
+}
+
+#[test]
+fn saved_exit_is_not_downgraded_when_release_was_not_saved() {
+    let ex = experiment();
+    let host = start_host(&ex.paths, Some("exit-saved"));
+    ex.paths.wait_started();
+    ex.paths.open_gate();
+    reap_killed(host);
+    let core = reopen(&ex.paths);
+    let view = core.lookup(CALLER, ID).unwrap();
+    assert!(matches!(
+        view.operation.execution.value(),
+        Some(rho_core::ExecutionFact::ExitObserved {
+            exit: rho_core::Exit::Code(0),
+            ..
+        })
+    ));
+    assert!(matches!(
+        view.operation.group_released,
+        rho_core::Knowledge::Unknown { .. }
+    ));
+    assert!(matches!(
+        core.forget(CALLER, ID),
+        Err(ForgetError::NotTerminal(_))
+    ));
+    let config = ex.paths.config();
+    drop(core);
+    let core = Core::open(config).unwrap();
+    assert_eq!(
+        core.lookup(CALLER, ID).unwrap().operation.execution,
+        view.operation.execution
+    );
+    duplicates_find_the_original(&core, &ex.paths);
+}
+
+#[test]
+fn a_failed_term_is_not_reported_as_sent_or_as_a_confirmed_stop() {
+    let ex = experiment();
+    let mut host = host_command(&ex.paths, None, false)
+        .env("RHO_TEST_HOST_SCENARIO", "signal")
+        .env("RHO_CORE_FAIL_AT", "signal-term")
+        .spawn()
+        .unwrap();
+    let status = within("signal experiment", move || host.wait().unwrap());
+    assert!(status.success(), "{status}");
+    let record: rho_core::OperationRecord =
+        serde_json::from_slice(&fs::read(ex.paths.root.join("signal-result.json")).unwrap())
+            .unwrap();
+    let cancel = record.cancellation.unwrap();
+    assert!(cancel.term_sent_at.is_none());
+    assert!(cancel.signal_error.as_deref().unwrap().contains("failed"));
+    assert!(cancel.kill_sent_at.is_some());
+    assert!(matches!(
+        record.execution.value(),
+        Some(rho_core::ExecutionFact::ExitObserved {
+            exit: rho_core::Exit::Signal(libc::SIGKILL),
+            ..
+        })
+    ));
+    assert_eq!(ex.paths.dispatches(), 1);
+}
+
+fn delete_crash(point: &str) -> Experiment {
+    let ex = experiment();
+    fs::write(
+        ex.paths.root.join("task.code"),
+        "echo $$ >> dispatches.log\nprintf 'finished'\n",
+    )
+    .unwrap();
+    let host = host_command(&ex.paths, Some(point), false)
+        .env("RHO_TEST_HOST_SCENARIO", "delete")
+        .spawn()
+        .unwrap();
+    reap_killed(host);
+    ex
+}
+
+#[test]
+fn a_crash_inside_deletion_keeps_the_acceptance_and_its_blobs() {
+    let ex = delete_crash("delete-staged");
+    let core = reopen(&ex.paths);
+    assert!(core.lookup(CALLER, ID).unwrap().is_terminal());
+    assert_eq!(
+        core.read_output(CALLER, ID, Stream::Stdout, 0, 100)
+            .unwrap()
+            .bytes,
+        b"finished"
+    );
+    duplicates_find_the_original(&core, &ex.paths);
+    assert_eq!(ex.paths.dispatches(), 1);
+}
+
+#[test]
+fn a_crash_after_committed_deletion_releases_the_key_explicitly() {
+    let ex = delete_crash("deleted");
+    let core = reopen(&ex.paths);
+    assert!(matches!(
+        core.lookup(CALLER, ID),
+        Err(LookupError::NotFound { .. })
+    ));
+    assert_eq!(
+        core.submit(CALLER, ex.paths.request()).unwrap().disposition,
+        Disposition::Accepted
+    );
+    assert!(core.wait(CALLER, ID, PATIENCE).unwrap().is_terminal());
+    assert_eq!(ex.paths.dispatches(), 2);
 }

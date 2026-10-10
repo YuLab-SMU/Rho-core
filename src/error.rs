@@ -29,8 +29,8 @@ pub enum WorkdirProblem {
     Unreadable(String),
 }
 
-/// A submission that was not accepted. No record was created and nothing was
-/// started, except that [`SubmitError::Conflict`] reports an existing record.
+/// A submission could not return a usable accepted view. An acceptance or
+/// native execution may already exist when a commit reply or later read failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubmitError {
     InvalidRequest(String),
@@ -55,7 +55,8 @@ pub enum SubmitError {
     RecordUnreadable {
         reason: String,
     },
-    /// The record could not be saved durably, so nothing was dispatched.
+    /// A storage transaction or query failed. The stage of failure determines
+    /// whether acceptance or native execution has already happened.
     Storage(String),
 }
 
@@ -110,16 +111,22 @@ impl fmt::Display for SubmitError {
 
 impl std::error::Error for SubmitError {}
 
-/// No accepted request is visible under this caller and request id.
+/// An acceptance lookup failed; storage uncertainty is distinct from absence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LookupError {
     InvalidIdentity(String),
-    /// No readable record of this identity is in the state dir. This is not
-    /// evidence that no process ran elsewhere or under an unreadable record.
+    /// A successful query found no acceptance under this key. Store/read errors
+    /// are distinct and this does not prove that no process ran elsewhere.
     NotFound {
         caller: String,
         request_id: String,
     },
+    /// An acceptance exists but its stored facts cannot be interpreted safely.
+    RecordUnreadable {
+        reason: String,
+    },
+    /// The store could not be queried; this is never evidence of absence.
+    Storage(String),
 }
 
 impl fmt::Display for LookupError {
@@ -128,8 +135,12 @@ impl fmt::Display for LookupError {
             Self::InvalidIdentity(reason) => write!(f, "invalid identity: {reason}"),
             Self::NotFound { caller, request_id } => write!(
                 f,
-                "no readable record of request `{request_id}` for caller `{caller}`"
+                "no accepted record of request `{request_id}` for caller `{caller}`"
             ),
+            Self::RecordUnreadable { reason } => {
+                write!(f, "accepted record is unreadable: {reason}")
+            }
+            Self::Storage(reason) => write!(f, "operation store could not be queried: {reason}"),
         }
     }
 }
@@ -171,7 +182,7 @@ impl From<LookupError> for ReadError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ForgetError {
     Lookup(LookupError),
-    /// The run may still be running; only terminal records can be removed.
+    /// Completion, release or saved facts are unconfirmed; the record is protected.
     NotTerminal(Box<RunView>),
     Io(String),
 }
@@ -181,7 +192,11 @@ impl fmt::Display for ForgetError {
         match self {
             Self::Lookup(error) => error.fmt(f),
             Self::NotTerminal(run) => {
-                write!(f, "run {} is not terminal; nothing removed", run.run_id)
+                write!(
+                    f,
+                    "run {} is protected; completion, release or saved facts are unconfirmed; nothing removed",
+                    run.run_id
+                )
             }
             Self::Io(error) => write!(f, "record could not be removed: {error}"),
         }
