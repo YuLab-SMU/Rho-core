@@ -1,225 +1,118 @@
-# Core architecture and code navigation
+# Rho Core：目标架构
 
-Core coordinates Rho's contact with the outside world: caller identity, authority,
-provider routing, accepted Operations and their recorded outcomes. Owner queries
-describe bounded observations. The journal records what Core accepted and settled;
-it does not establish every external action or the truth of a scientific claim.
+本文件从必要行为定义新架构，属于设计契约，不是当前代码导航。实施范围与验收见
+[Mission and plan](MISSION-AND-PLAN.md)；旧实现保留方式见 [Rebuild](REBUILD.md)。
 
-The [mission and implementation plan](MISSION-AND-PLAN.md) records the durable
-design direction and work selection criteria. This page describes current code
-and contracts; the plan's candidate mechanisms are not automatically Core APIs.
+## 最小调用路径
 
-## Crate ownership
+研究者、普通客户端和外部 Agent 选择一个已接入工具，传入明确参数，取得 Owner 的
+真实结果。Core 负责自己承担的调用与执行；目标、计划和模型上下文留在调用方。
 
-| Location | Responsibility |
-| --- | --- |
-| [contract](../crates/contract/src/lib.rs) | Public Host requests, Operations, observations and discovery schemas. |
-| [operation](../crates/operation/src/lib.rs) | Registry, admission, explicit request retry protection, execution, cancellation and retained-result commit reconciliation. |
-| [adapters/sqlite](../crates/adapters/sqlite/src/lib.rs) | Journal persistence and scoped record reads. Application settings have a separate store in this adapter. |
-| [host](../crates/host/src/lib.rs) | Project ownership, launcher authority, composition and shared public calls. |
-| [plugins](../crates/plugins/src/lib.rs) | Package containment, provider registration, native instances, resources and restricted views. |
-| [plugin-protocol](../crates/plugin-protocol/src/lib.rs) | Wire contracts between Core and native owners. |
-| [plugin-sdk](../crates/plugin-sdk/README.md) | Public backend transport helpers; no Host or journal dependency. |
-| [process-engine](../crates/process-engine/README.md) | Bounded process supervision shared by native callers. |
-| [cli](../crates/cli/src/main.rs), [mcp](../crates/mcp/src/lib.rs), [workbench](../crates/workbench/src/lib.rs) | CLI/session, MCP and HTTP adapters to the same Host, plus application asset serving. |
-| [sdk](../sdk) | Public dependency source and generated TypeScript contracts, exported as pinned snapshots. |
-
-The `rho-plugins` crate here is Core's plugin infrastructure. Scientific plugin
-implementations belong to the independent Rho-plugins repository; application
-composition belongs to Rho. Core builds without either sibling checkout.
-
-## Host entry points
-
-`NextHost` keeps one public facade. Its implementation is divided by responsibility,
-without introducing another dispatch or execution layer.
-
-| Module | Start here when changing |
-| --- | --- |
-| [lib.rs](../crates/host/src/lib.rs) | Public exports, runtime ownership and capability publication. |
-| [authority.rs](../crates/host/src/authority.rs) | Local identity, Core scopes and explicit launcher grants. |
-| [config.rs](../crates/host/src/config.rs), [workspace.rs](../crates/host/src/workspace.rs) | Host reservation, writable assembly and explicit read-only entry points. |
-| [ownership.rs](../crates/host/src/ownership.rs), [paths.rs](../crates/host/src/paths.rs) | Cooperative project lease, canonical identity and protected storage paths. |
-| [ports.rs](../crates/host/src/ports.rs), [port_contracts.rs](../crates/host/src/port_contracts.rs) | Public requests and the existing operation/query/control adapters. |
-| [lifecycle.rs](../crates/host/src/lifecycle.rs) | Accepted-task draining and quit preconditions. |
-| [observer.rs](../crates/host/src/observer.rs), [discovery.rs](../crates/host/src/discovery.rs) | Read-only records, scoped discovery and observation composition. |
-| [plugin_views.rs](../crates/host/src/plugin_views.rs) | View calls delegated through the original Host authority and operation path. |
-
-Writable assembly always has a canonical project lease, a journal and the plugin
-service. Opening the service registers infrastructure; it does not select or start
-a scientific provider. The reserved entry point consumes the already acquired lease.
-Read-only observers compose record queries separately, without writer ownership,
-provider startup or incomplete-operation recovery.
-
-The project lease coordinates cooperative Rho Hosts. It is not a filesystem sandbox
-and does not prevent the same user or an external tool from changing project files.
-
-## Execution and lifetime
-
-Transport adapters supply a mechanically checked request and an established caller
-context to the Host. Launcher grants are fixed authority; manifests and request
-bodies cannot add scopes. The Operation gateway and selected owner then check the
-original target, authority and native preconditions.
-
-Accepted work belongs to the Host task tracker. Tasks retain the entire runtime,
-including the project lease, until their own completion; losing a response does not
-abandon a commit or confirm cancellation. Runtime fields keep the lease after the
-registry, gateways and plugin service so teardown cannot release ownership first.
-Before draining, callers stop admitting requests through every transport.
-
-`operation.reconcile_commit` uses the retained validated result of the original
-Operation. It neither replays the native action nor reconstructs external history.
-Later owner observations can improve understanding without rewriting that record.
-
-## Interpretation and explicit request identity
-
-Core checks transport and recorded capability contracts. A schema-valid reply does
-not prove a scientific claim; a contract fault retains the original owner material
-without establishing that the underlying computation is scientifically invalid.
-Owner observations can have unknown times, incomplete data or conflicting reports.
-Callers acquire more context for their current question rather than waiting for a
-complete envelope or a stable world model.
-
-The current retry lookup uses the caller's explicit `client_request_id` and
-matching request in the relevant journal scope. `operation_id` identifies the
-accepted record. Core does not infer intent from similar code or nearby times;
-a new request ID expresses a new submission. This is duplicate-delivery protection,
-not a requirement for idempotent scientific computation or an exactly-once guarantee
-for external effects. The original native outcome may still be unknown.
-
-Core reconciliation commits a retained report. Native job attachment, log reads,
-native cancellation and deliberate reruns remain distinct owner capabilities.
-Capability metadata describes interfaces and concrete conditions, not a general
-judgment of whether a result is usable or an experiment should be repeated.
-
-## Agent-facing entry points
-
-Core serves researchers and external agents by shaping its information and behavior
-for progressive disclosure, continuation and explicit navigation. Skills, loops and
-graphs are therefore design lenses inside the existing modules, not a separate agent
-runtime or a claim of integration with a particular framework. Loop and Graph also
-describe how Core manages observable behavior boundaries for people and agents;
-they are not merely compatibility features.
-
-| Caller behavior | Existing entry points and source | Boundary |
-| --- | --- | --- |
-| Discover | `host.overview`, `host.catalog`, `host.describe`; [discovery](../crates/host/src/discovery.rs), [capability documentation](../crates/contract/src/discovery.rs) | Skill-shaped disclosure: purpose and owner first, then schema, preconditions, effects, retry/cancellation and examples. A known capability can be called directly; the views are not a mandatory sequence. |
-| Observe | QueryGateway and QuerySnapshot; [query](../crates/operation/src/query.rs), [snapshot](../crates/contract/src/query.rs), [context references](../crates/plugin-protocol/src/context.rs) | Skill-shaped observation: target, source, range, completeness, notices and next reads. Loop continuation can use a new query; Context references preserve owner identity without making a world model. |
-| Act | Operation and specific Control ports; [ports](../crates/host/src/ports.rs), [control](../crates/operation/src/control.rs) | Loop action: a chosen request is admitted, bound to an owner, executed under native conditions and returned with its known outcome. Core does not select experiments or decide scientific value. |
-| Relate | Original records and explicit call-context labels; [record reads](../crates/operation/src/record.rs), [CallContext and Operation](../crates/contract/src/lib.rs) | Graph anchors: operation IDs, request IDs, correlation, causation and native references preserve declared relationships. They do not establish verified scientific causality or a full dependency graph. |
-| Continue | Original-record reads, event cursors, cancellation and retained-report reconciliation; [port contracts](../crates/host/src/port_contracts.rs), [commit recovery](../crates/operation/src/commit_recovery.rs) | Loop continuation: `next_reads`, event positions, cancellation and retained reports expose concrete next actions. `Uncertain` does not trigger replay; native attachment and reruns remain separate owner actions. |
-
-These are descriptions of existing behavior, not five new API kinds. A Context
-View is the caller's scoped assembly of selected observations and records, with
-their separate times and limits. It is not a materialized Core context package.
-Core propagates limitations; scientific methods and callers assess their effect
-on a particular use or claim. No general browse/analyze/publish permission matrix
-is inferred from missing provenance.
-
-The same record can be read through three lenses. Its documentation is the
-progressive-disclosure surface for a Skill-shaped information module; its status,
-outcome, `next_reads` and event cursor are the continuation points of a Loop; its
-explicit IDs and declared references are the anchors of a local behavior Graph.
-These lenses share existing contracts and do not introduce a second state machine.
-Core therefore manages caller/connection context, operation admission and lifetime,
-native cancellation and commit boundaries, retained reports and explicit record
-relationships. The external caller owns goals, prompts, plans, graph layout,
-branch policy and scientific claims. Human and Agent callers use the same boundary;
-Core does not create two behavior models.
-
-The concrete mapping is intentionally small:
-
-| Lens | Existing Core contracts and entry points | What the lens adds to their design | What remains outside Core |
-| --- | --- | --- | --- |
-| Skill | `CapabilityDescriptor`/`CapabilityDocumentation`, `host.overview`, `host.catalog`, `host.describe`, `QuerySnapshot`, `ContextSearch` and `ContextPreview` | Each information module can disclose a short affordance first, then its schema, conditions, effects, limits and related reads | Skill files, loading policy, selection, SOP execution and model context management |
-| Loop | `QueryGateway`, `OperationGateway`, `Control`, `OperationStatus`, Host task tracking, event cursors and `operation.reconcile_commit` | A person or Agent can observe, act, receive a bounded result, locate the original action and choose a concrete continuation without replay being inferred | Goals, prompts, plans, messages, branch policy, stopping decisions and scientific interpretation |
-| Graph | `CallContext` IDs, `Operation` IDs and declared relationships, `OperationEventRecord`, `NextRead`, `ContextReference`, recent-record reads | Explicit identity, declared causation/correlation, event position and owner references can support a bounded local behavior view | Graph nodes/edges as runtime state, layout, reducers, scheduling, checkpoints and inferred causality |
-
-These are not three parallel state stores. One `OperationRecord` can carry its
-progressive documentation, continuation material and relationship anchors at once;
-the journal remains the single record of what Core accepted and settled.
-
-The current [recent-record arguments](../crates/contract/src/observations.rs) allow
-paging, an exact OperationId or a caller request ID. They do not expose correlation
-or causation filters. Such navigation remains a candidate in the mission plan,
-selected only after a concrete lookup gap is demonstrated. `causation_id` is a
-single declared trigger reference, not all inputs to an operation; adding DAG
-support does not justify replacing it with a dependency engine.
-
-Plans, messages, todo lists, graph state, graph checkpoints, handoff policy and
-tool selection belong to the external runtime. Core references and journal events
-must not turn that runtime state into project truth. Core does retain the explicit
-record relationships and continuation material needed for a bounded local view;
-it does not infer edges from similarity or run the external graph. Permission-system
-design remains deferred as specified by the mission plan; existing checks described
-here are implementation facts rather than authorization to expand that system.
-
-## Responsibility boundary after the breaking upgrade
-
-Core no longer owns test-project orchestration, editable source branches,
-checkpoints, build execution, development previews, scenarios, layouts, visual
-models, synchronized drafts or saved view content. Their implementation, public
-contracts and dedicated storage have been removed under the
-[responsibility transfer requirements](RESPONSIBILITY-TRANSFER.md).
-
-The remaining view record binds an immutable instance, contribution, bootstrap
-configuration, optional resource and authenticated window. It is connection
-metadata, with no buffer, content version or history. Close preparation coordinates
-registered participants and their original Operation; the owner decides what its
-preparation requires through declared ports. All confirmations seal new actions.
-An explicit disconnect checks the observed connection identity and does not attest
-to saved content or native cleanup. Renderer destruction cannot stand in for a
-participant's confirmation.
-
-The breaking upgrade uses fresh projects and storage. Catalog format 2 rejects a
-previous catalog before any mutation; no migration, compatibility or historical
-product-data recovery path remains. Operations accepted under the new contract
-keep their identity, original request, outcomes and uncertainty. Consumer SDK
-refresh and product integration remain separate owner tasks.
-
-## Focused verification
-
-Start with the concrete user action, its observable result and a plausible failure.
-Reuse the smallest existing test that distinguishes that failure from correct
-behavior. Add a case only when it covers a missing outcome or trust boundary;
-changing a file or adding a field alone does not require another test.
-
-Examples below select different responsibilities, not a mandatory combined suite.
-Run Cargo commands serially in this checkout.
-
-| Changed intent | Select the relevant check |
-| --- | --- |
-| An external caller reads and acts without a window, retries an original request, or needs a launcher grant | `cargo test -p rho-cli --test headless --locked` |
-| A query must leave storage and a live writer alone | `cargo test -p rho-cli --test query_purity --locked` |
-| A package is inspected without execution, round-trips unchanged, or refuses an incompatible catalog | `cargo test -p rho-plugins --test package_repository --locked` |
-| A view may close only after participant confirmation | `cargo test -p rho-host --test plugins close_requires_owner_preparation --locked` |
-| Accepted work survives disconnect, cancellation or lost native settlement | Select the matching test in `rho-host --test plugins` or `--test plugin_delegated_operations` |
-| A validated result cannot commit, then must reconcile without native reexecution | `cargo test -p rho-sqlite --lib commit_recovery_tests --locked` |
-| A shared transport changes framing, authentication or response handling | Select `rho-cli --test session`, `--test connection`, `rho-mcp`, or `rho-workbench` according to the changed edge |
-
-Assert observable effects and retained identities: actual owner execution counts,
-unchanged bytes after refusal, original records after retry, and an open connection
-when preparation is missing. Do not keep inventories of deleted capabilities,
-private table names or exact diagnostic wording as substitutes for these results.
-SQL fault injection is useful when it exposes a commit failure that a public caller
-must handle; merely counting implementation tables is not acceptance.
-
-Use virtual time for a timer-only timeout, and ordinary time for native process or
-I/O cooperation. Tests must still pass through the timeout and inspect its outcome.
-A protocol fixture proves Core authority, dispatch and settlement; it does not prove
-a scientific conclusion or an Owner's native behavior. The former ignored Agent,
-real-R and Files product suites are retired from Core; selected scientific and
-composition acceptance belongs to the corresponding source owner or application.
-No consumer SDK refresh, domain migration or composition is implied by a Core pass.
-
-For changed production dependencies or assembly, build the independent binary and
-check source closure with `cargo build --locked` and
-`node scripts/check-boundaries.mjs`. For test-only edits, run the affected checks;
-do not rebuild the product or run unrelated native workflows to increase a count.
-Use prior passing evidence when it still covers unchanged behavior.
-
-For UI SDK changes, compile and test the public browser handshake independently:
-
-```sh
-npm exec --yes --package=typescript@5.9.3 -- tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM --strict --rootDir sdk --outDir target/sdk-test sdk/plugin-ui/index.ts
-RHO_UI_TEST_BUILD="$PWD/target/sdk-test" node --test scripts/tests/plugin-ui.test.mjs
+```mermaid
+flowchart LR
+    Client[研究者客户端或外部 Agent] --> Edge[公开传输入口]
+    Edge --> Call[本地工具分派]
+    Call --> Domain[领域适配器]
+    Domain --> Native[文件、会话、进程或任务]
+    Domain --> Call
+    Call --> Edge
+    Edge --> Client
+    Call --> Receipt[必要的执行记录]
 ```
+
+图中是逻辑职责，首版可以在一个进程内实现。记录只服务需要保护副作用、找回运行
+与读取回报的动作；普通读取直接返回。传输不创建第二条执行路径，领域适配器可以
+使用实际需要的独立原生进程，但不要求所有调用都经过微服务。
+
+| 职责 | 做什么 | 初始边界 |
+| --- | --- | --- |
+| 公开入口 | 解析、连接、传递调用及结果 | CLI、MCP 或 HTTP 按真实消费者逐个接入；先交付一个 |
+| 工具分派 | 接入已声明工具，校验必要参数和目标，调用正确 Owner | 简短目录与详细说明来自同一份描述；不选择科研行动 |
+| 执行与回报 | 持有已受理动作，提供状态、原请求和结果入口 | 只管理 Core 自己受理的工作；原生句柄由 Owner 解释 |
+| 领域适配器 | 原生检查、读取、执行与局部恢复说明 | Core 不统一语言对象、不推断原生完成、不负责科学判断 |
+
+这些职责不预先对应 crate、抽象基类或四套数据库。实现从首个公开读取开始；共享
+机制在两个选定流程出现共同缺口后提取。
+
+## 工具描述与结果
+
+工具描述应能回答：有什么用途、参数怎么写、接触哪个对象、读取或改变什么、有哪些
+真实限制、怎样取得较大结果、失败与重试意味着什么。已知工具可以直接调用；目录、
+详细说明与示例按需读取，不形成必经的发现流水线。
+
+这是语义要求，具体字段与名称在公开契约里程碑中选择并验证。不保留旧
+`host.overview/catalog/describe`、`QuerySnapshot` 或 `OperationRecord` 类型来充当
+新设计的前置定义；标准传输已有表达优先复用。
+
+读取结果至少能表达有效载荷、实际读取范围与限制。已知的来源和观察时间随结果
+传递，未知就明确未知。缓存、部分、忙碌和不可用与空结果可区分。大内容使用分页、
+原生句柄或受限资源，说明续读身份如何验证；不通过静默截断假装完整。
+
+不同 Owner 的先后读取各有自己的时点，不构成原子项目快照。历史引用确需再读取
+时，Owner 校验原身份或版本；材料变化返回限制与新的读取入口，不能拿当前字节
+冒充旧输入。普通读取不强制保留历史字节、不启动或恢复运行时、不创建执行记录。
+
+## 有副作用的调用
+
+1. 公开入口取得用户已选择项目下的请求，分派到明确工具和目标。
+2. 检查结构、目标范围和真实原生前提。必要的短期资源保留由实际 Owner 负责。
+3. 为需要重复送达保护的动作保存原请求身份与受理信息；受理写入失败则不派发。
+4. 派发一次动作，执行期间持有资源与原生关联，等待者断线不自动撤销受理。
+5. 返回或保留已知回报；无法确认的派发、原生效果或结果存储分别说明未知。
+
+实际 Owner 必须在真正读写或执行时检查可变前提。Core 的一次预检查不能消除
+TOCTOU；同样，记录提交不与原生效果形成分布式事务。需要追加检查时说明具体
+可变条件及用户后果，不逐层复制一套泛化校验。
+
+请求身份限定在本地项目与调用方的稳定命名空间内，并绑定实际工具、目标与参数。
+等待连接变化不改变该身份。同身份同请求返回原受理信息；同身份不同请求拒绝。
+客户端代持身份，有意再次运行用新身份。
+效果不可确认时保持未知，不能自动重新派发或承诺外部 exactly-once。
+
+## 执行状态与继续
+
+只暴露调用方需要回答的问题：是否已受理、是否可能仍在运行、已知结果是什么、
+取消是否确认、还有什么能读。具体状态枚举在故障实验后确定，首版不预建通用恢复
+状态机。结果未知是一项信息限制，不能成为全项目读写禁令。
+
+| 场景 | 调用方得到什么 | 后续动作 |
+| --- | --- | --- |
+| 普通短调用完成 | 原请求关联与真实结果 | 按用途继续读取或执行 |
+| 长调用仍在运行 | 原执行身份与有界状态、输出入口 | 继续观察或请求取消 |
+| 等待连接丢失 | 原受理仍可定位，原生执行可能继续 | 重连读取原执行，不重新提交动作 |
+| 派发后进程中断 | 原记录与结果未知；有句柄时保留句柄 | Owner 检查已有任务，无法确认时保持未知 |
+| 原生完成而回报存储失败 | 已知回报或其存储失败限制 | 若回报仍可取得则补存；无法取得则说明缺失 |
+| 取消或释放未确认 | 对应请求与未确认的资源 | 查询或清理该资源；不冒充已停止 |
+
+补存回报只处理已取得的材料，重连只连接原生已有任务，重新执行是新的请求。
+它们可以复用维护中的工具，不需要一个统一 Recovery Manager。当前文件与预期相同
+不能证明旧动作造成了它；查询新状态可以帮助继续，却不能改写原请求历史。
+
+## 最小保留与存储
+
+需要继续的受管动作保留：项目与本地调用范围、请求身份、工具与目标、实际参数、
+受理状态、已知原生句柄、结果或结果入口、错误与已知限制。仅在具体用途需要时
+保留确切输入或输出字节，避免把执行日志扩成对话记忆、全量变化事件或科研账本。
+
+受理先于派发，但二者之间的崩溃窗口不能凭日志消除。进程重启后先读取原记录与
+Owner 可检查的句柄；不因缺少最终结果把未完成记录重新派发。记录保留期限内提供
+重复送达保护；过期身份的处理必须公开说明，不能悄悄将旧身份当成新动作。
+
+存储选型待阶段 2 的故障实验。使用成熟存储提供明确的原子写入与持久化语义，
+不重建 Event Sourcing、Outbox 或提交候选管理器。只有真实流程证明需要跨步骤
+投递或保存候选回报时才引入相应最小机制。默认不存查询；保留与清理策略必须保护
+仍在运行或仍被引用的材料，并为容量不足定义明确拒绝行为。
+
+## 执行边界与非目标
+
+首版在用户 OS 账户下运行，使用用户选择的项目和声明的适配器，不偷偷发现或启动
+科学环境。文件工具在实际访问边界验证路径与符号链接范围；任意代码执行的影响
+可能超出项目，这需要在工具说明中表达，不能声称路径检查构成进程沙箱。
+
+本地信任模型先成立，不建设角色或逐能力审批。新增网络入口时必须先完成该入口
+所需的认证、暴露范围与请求资源限制；HTTP 的部署不能直接继承 stdio 的信任。
+OS 隔离、远程共享与多用户策略是选定需求后的独立任务。
+
+Core 不管理模型推理、隐藏思维链、prompt、向量记忆、图调度、编辑器缓冲区、应用
+布局或科学结论。新协议与 SDK 只维护一个源头；导出与消费端选定属于后续任务。
+原插件目录、视图协议与包格式的兼容不是这次重建的要求。

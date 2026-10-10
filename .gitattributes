@@ -4,3 +4,5 @@
 # Unified diffs use a single space for an empty context line. Replay still checks
 # added source lines with git apply --whitespace=error-all.
 /patches/jet/*.patch whitespace=-blank-at-eol
+# Keep the supplied review's bytes, including Markdown hard-break spaces.
+/docs/review/USER-REPORT.txt -text whitespace=-blank-at-eol
