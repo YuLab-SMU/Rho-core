@@ -10,6 +10,13 @@ Use [Engineering guide](docs/ENGINEERING.md) to select the first flow, describe 
 contract, expose necessary facts and scope regression checks. The architecture's
 core principles govern expansion; this guide does not authorize a new framework.
 
+Read [Engineering progress](docs/PROGRESS.md) when selecting or resuming work.
+Maintain one selected-task record under docs/work/ using the
+[recording rules](docs/ENGINEERING-MONITORING.md). Record meaningful work, actual
+timestamps, duration coverage and verification; historical commit times do not
+establish work duration. Update the task and current summary at checkpoints and
+closure, without introducing a runtime monitoring subsystem or automatic follow-up.
+
 ## Scope and design
 
 - This repository owns Core's programmatic boundary and the selected managed

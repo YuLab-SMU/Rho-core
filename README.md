@@ -14,6 +14,8 @@ Rho Core 为 Agent 工作环境补足需要管理的本地执行：定位选定�
 | [使命与实施计划](docs/MISSION-AND-PLAN.md) | Agent 工作方式、受管价值、按需里程碑与验收 |
 | [目标架构](docs/ARCHITECTURE.md) | 核心职责的做什么、为什么、如何做到；依赖方向与执行保证 |
 | [工程实践指南](docs/ENGINEERING.md) | 首个流程的开工条件、必要信息、故障验证、回归与交付闭环 |
+| [工程进度总览](docs/PROGRESS.md) | 当前任务、近期交付、下一步与详细记录入口 |
+| [工程进度与耗时规则](docs/ENGINEERING-MONITORING.md) | 做了什么、什么时候做、用了多久；记录模板与时间口径 |
 | [审核报告取舍](docs/AUDIT-DECISIONS.md) | 本轮设计问题、纠正决定、核对来源与最小验证 |
 | [用户原始审核报告](docs/review/USER-REPORT.md) | 保留的审核输入，包含尚未核实的主张 |
 | [重建与分支规则](docs/REBUILD.md) | 归档、主分支开发、独立验收与后续集成 |
