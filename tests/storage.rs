@@ -323,18 +323,6 @@ fn a_corrupt_database_is_not_initialized_as_an_empty_store() {
 }
 
 #[test]
-fn an_unimported_file_store_is_never_treated_as_empty() {
-    let tmp = tempfile::tempdir().unwrap();
-    let project = tmp.path().join("project");
-    let state = tmp.path().join("state");
-    fs::create_dir(&project).unwrap();
-    fs::create_dir_all(state.join("records")).unwrap();
-    let error = Core::open(CoreConfig::new(project, &state)).err().unwrap();
-    assert!(error.to_string().contains("legacy file store"));
-    assert!(!state.join("core.sqlite3").exists());
-}
-
-#[test]
 fn sqlite_online_backup_keeps_committed_metadata_and_artifact_references() {
     let fx = Fixture::new();
     let view = fx.run("job");

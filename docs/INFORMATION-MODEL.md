@@ -60,7 +60,7 @@ SQLite 配置为 WAL、FULL 同步，并启用 macOS 的 fullfsync。当前锁�
 [官方 WAL 文档](https://www.sqlite.org/wal.html) 与
 [synchronous 说明](https://www.sqlite.org/pragma.html#pragma_synchronous) 定义数据库保证；
 数据库事务不包含原生副作用，也不恢复已经丢失的原生句柄。物理断电仍需单独实验。
-旧文件格式明确拒绝，原文件保留；本次不引入自动迁移或双写。
+开发状态可在格式变更时清除重建；只维护当前 SQLite 格式，不建立旧格式识别、保留或迁移机制。
 
 ## 单调更新与可验证行为
 

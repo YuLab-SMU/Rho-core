@@ -55,8 +55,8 @@ its committed transaction explicitly releases the request key and artifact
 references. Unreferenced blobs are collected, except those pinned by unsaved
 in-memory output. Logical deletion is not secure erasure of database pages, WAL,
 filesystem blocks or backup copies. The library sends no telemetry and contacts
-no network service. Existing file-format stores are preserved and rejected, not
-silently imported or treated as empty.
+no network service. Only the current SQLite format is maintained; obsolete
+development fixtures are disposable when changing storage formats.
 
 Check delivered behavior before describing it as implemented. Execution and
 deployment limits are in [SECURITY](SECURITY.md).

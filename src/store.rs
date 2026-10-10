@@ -208,14 +208,6 @@ impl OperationStore {
             thread::sleep(Duration::from_millis(5));
         }
         let owner = OwnerLock(lock_file);
-        // An unimported old store must never look like an empty new one. This
-        // rebuild deliberately uses fresh stores rather than migrating data.
-        if dir.join("store.json").exists() || dir.join("records").exists() {
-            return Err(StoreError::Unreadable(
-                "legacy file store: use a fresh state_dir; automatic import is not supported"
-                    .into(),
-            ));
-        }
         let path = dir.join(DATABASE);
         let existed = path.try_exists()?;
         let db_file = OpenOptions::new()
