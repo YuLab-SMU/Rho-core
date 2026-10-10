@@ -8,31 +8,45 @@ target behavior; they do not claim that a new runtime already exists.
 
 ## Scope and design
 
-- This repository owns the generic local tool runtime, its public contracts and
-  transport adapters. Scientific semantics belong to their real adapters; the
-  application, model execution and Agent orchestration have separate owners.
-- Start with a concrete caller action and an observable completion condition.
-  Choose the smallest implementation that satisfies it. Old crate boundaries,
-  APIs, catalogs, tests, SDK exports and storage formats are not requirements.
-- Use maintained libraries, ordinary files, Git and native task handles first.
-  A new shared abstraction must solve the same demonstrated gap in more than one
-  selected flow. Do not build a framework to accommodate hypothetical consumers.
-- Tools expose understandable descriptions and bounded structured results.
-  Skills, loops and graphs guide callers; they do not prescribe Core modules,
-  persistent state or mandatory discovery steps.
-- Read real state on demand. Preserve source, scope, known observation time and
-  limitations when they matter. Do not substitute model context for a fresh read
-  or silently present current bytes as a retained historical input.
-- Protect concrete effects: target containment, conflicting writes, explicit
-  retry identity and native execution conditions. A lost reply does not authorize
-  rerunning an action. Cancellation, disconnection and rollback remain distinct.
-- First deliver a trusted single-user local flow. Role systems, multi-user
-  deployment and general approval policies are later requirements. Already
-  authorized work receives no additional Rho approval. Local execution is not an
-  OS sandbox; scope declarations cannot claim isolation they do not enforce.
-- Define every resource bound by the resource protected, configuration and
-  behavior on exhaustion. Avoid silent truncation, unbounded queues and logging
-  every read. Record only what a selected continuation or effect requires.
+- This repository owns Core's programmatic boundary and the selected managed
+  execution and continuation guarantees. Optional protocol adapters depend on
+  Core; Core must not depend on protocol types or client-specific behavior.
+  Logical separation does not require separate repositories, services or crates.
+- Agent harnesses read documentation, select tools, compose code and manage model
+  context. They may use existing CLIs, SDKs and MCP servers directly. Do not require
+  every external capability to be registered, proxied or packaged as a Rho plugin.
+  Domain and native semantics remain with their actual owners.
+- Start with a concrete caller action and observable completion conditions. Try
+  maintained tools first and identify the managed guarantee they cannot provide.
+  Uniform naming, a common catalog or possible future consumers do not justify
+  adding a subsystem. Old APIs, tests, SDKs and formats are not requirements.
+- Core describes its own capabilities, with documentation and examples available
+  on demand. Do not predefine an endpoint for each scientific method, require a
+  discovery pipeline or force every native result into one universal model.
+  Compare focused tools and code composition on actual tasks.
+- Reuse ordinary functions, files, Git, maintained libraries and native execution
+  handles. Add shared mechanisms for a demonstrated gap, not an arbitrary count
+  of flows. Do not recreate a capability already supplied by the execution owner.
+- Scope every guarantee to the managed actions, process lifetime and retention
+  actually covered. External actions may be observed later; never synthesize Core
+  acceptance, deduplication or causal history for them.
+- Native owners check changing object identities and preconditions at the actual
+  operation boundary. Core enforces its own request identity and access scope,
+  including direct calls. Model output and another adapter cannot expand either.
+  A lost reply does not authorize replay. Script composition does not imply a
+  transaction or permission to rerun partially executed code.
+- Return known results and limitations honestly. Current reads are not historical
+  inputs. Cancellation, confirmation, release and rollback remain distinct.
+  Retain only information needed by selected continuation or effect guarantees;
+  ordinary reads do not require logging or restarting a runtime.
+- First deliver a trusted single-user local flow without another Rho approval for
+  already authorized work. Authentication and transport limits belong to the
+  selected edge; native and Core checks still apply. Isolation belongs to the
+  actual execution environment. Path validation is not an OS sandbox.
+- Bound resources actually owned by the implementation: identify the protected
+  resource, default, configuration and exhaustion behavior. Include processes
+  started or held by Core. Avoid unbounded queues, silent truncation and a global
+  quota or monitoring system for the Agent's entire environment.
 
 ## Implementation and verification
 
@@ -41,10 +55,12 @@ small milestones. Consult the archive only for a concrete requirement or failure
 do not copy its subsystem map or revive a compatibility layer. Use fresh projects
 and storage. Do not migrate or export legacy catalogs as part of this rebuild.
 
-Core must build and be testable without Rho or Rho-plugins source. Use a minimal
-public-contract fixture for Core tests; scientific results require the real owner
-in a separately selected integration. Do not update sibling repositories, their
-SDK snapshots or application locks to close a Core milestone.
+Core must build and be testable without Rho or Rho-plugins source or an embedded
+model. Use a minimal native-execution fixture through the programmatic boundary;
+scientific results require the real owner in a separately selected integration.
+Protocol servers, a provider framework and an exported SDK are not milestone
+requirements without a real consumer. Do not update sibling repositories, SDK
+snapshots or application locks to close a Core milestone.
 
 Run focused behavior checks; never run Cargo builds/tests concurrently. Report
 only checks actually executed. Documentation changes need local link/anchor checks

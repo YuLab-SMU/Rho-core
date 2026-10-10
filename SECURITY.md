@@ -1,21 +1,33 @@
 # Rho Core security boundary
 
 `main` currently contains a rebuild design, not an executable runtime. The former
-implementation and its security assumptions are retained on
-`codex/legacy-core-before-rebuild`. This document states requirements for new code;
-it does not certify an implemented sandbox or security feature.
+implementation and its assumptions remain on `codex/legacy-core-before-rebuild`.
+This document states requirements; it does not certify implemented security
+features. Responsibilities are defined in [Architecture](docs/ARCHITECTURE.md).
 
-The first selected deployment is a trusted, single-user local project. Tool and
-target validation protects the actual boundary it can enforce. File containment
-does not isolate arbitrary executed code, which may use the user's OS privileges
-and network. Model output, tool descriptions and skill files cannot establish
-authority or override native execution conditions.
+The first selected deployment is a trusted, single-user local project. Core
+enforces the request identity, object association and access scope of its own
+managed calls, including direct programmatic calls. Native owners enforce changing
+preconditions where the operation actually occurs. Model output, tool descriptions,
+skills and protocol adapters cannot establish or expand authority. Already
+authorized work receives no additional Rho approval.
 
-New network transports must define authentication, exposure and resource limits
-before use. The trust of a local stdio connection does not transfer to HTTP.
-Remote sharing, role policies and OS sandboxing require separately selected
-requirements and verification. Already authorized local work does not receive an
-additional Rho approval step.
+Agents may use external tools directly within their actual environment's access
+boundary. Such actions do not acquire Core's acceptance, deduplication or
+continuation guarantees. Core records and locks do not isolate a shared native
+resource from external actors; the owner must check its actual identity and state.
+
+Optional protocol adapters own connection authentication, exposure, protocol
+compatibility and transport limits. They depend on Core's programmatic boundary.
+Authentication at an edge does not remove Core or native constraints. A local
+stdio connection's trust cannot simply transfer to a network deployment.
+
+The actual execution environment owns its process, file, network and isolation
+controls. Arbitrary code may use the user's OS privileges; path containment is not
+a process sandbox. If Core starts or holds processes, it must enforce the limits
+and lifetime behavior it declares for those resources. Remote sharing, multi-user
+policies and stronger isolation need concrete requirements and verification, rather
+than a general security framework or a model's judgment.
 
 For suspected vulnerabilities, use
 [private vulnerability reporting](https://github.com/YuLab-SMU/Rho/security/advisories/new).
