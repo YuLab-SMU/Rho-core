@@ -5,7 +5,9 @@
 //! process independently of any waiter, and lets the caller find the original
 //! request, its known state and bounded retained output again.
 //!
-//! Guarantees last for the lifetime of the [`Core`] value only. The contract,
+//! Accepted records are durable in the state directory: a later `Core` opened on
+//! the same directory finds them, never dispatches them again, and reports a
+//! run its predecessor was holding as detached. The contract,
 //! limits and failure semantics are in [`CONTRACT`] (`docs/MANAGED-RUN.md`);
 //! `examples/managed_run.rs` is a runnable caller.
 
@@ -13,11 +15,13 @@
 compile_error!("rho-core currently supports Unix platforms only");
 
 mod error;
+mod fault;
 mod os;
 mod run;
+mod store;
 
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -26,7 +30,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
-pub use error::{LookupError, OpenError, ReadError, SubmitError, WorkdirProblem};
+pub use error::{ForgetError, LookupError, OpenError, ReadError, SubmitError, WorkdirProblem};
 pub use run::{
     CancelInfo, CancelReason, Exit, OutputChunk, RequestInfo, RunStatus, RunView, Stream,
     StreamInfo,
@@ -73,7 +77,8 @@ impl Executor {
 pub struct Limits {
     /// Processes held at once; a new request beyond it is rejected, not queued.
     pub max_running: usize,
-    /// Accepted request records kept by this instance; never evicted.
+    /// Accepted request records kept in the state dir, including those of
+    /// earlier instances; never evicted, only removed by [`Core::forget`].
     pub max_records: usize,
     pub max_code_bytes: usize,
     pub max_args: usize,
@@ -108,7 +113,8 @@ impl Default for Limits {
 #[derive(Clone, Debug)]
 pub struct CoreConfig {
     pub project_root: PathBuf,
-    /// Parent of this instance's run files; created if missing.
+    /// Durable run records; created if missing. One Core uses it at a time,
+    /// and it stays bound to the first project opened on it.
     pub state_dir: PathBuf,
     pub executors: Vec<Executor>,
     pub limits: Limits,
@@ -167,8 +173,7 @@ pub struct Submitted {
 pub struct Capability {
     pub contract: &'static str,
     pub project_root: PathBuf,
-    /// This instance's run files; removed when the Core is dropped after all
-    /// runs stopped.
+    /// Durable run records, kept after the Core is dropped.
     pub state_dir: PathBuf,
     pub executors: Vec<Executor>,
     pub limits: Limits,
@@ -185,7 +190,11 @@ pub struct ShutdownReport {
 /// The programmatic boundary. Share it across threads by reference or `Arc`.
 pub struct Core {
     project_root: PathBuf,
-    instance_dir: PathBuf,
+    state_dir: PathBuf,
+    /// Distinguishes run ids of this instance from earlier ones.
+    instance: String,
+    /// Held for the Core's lifetime and by every holder thread.
+    store_lock: Arc<File>,
     executors: HashMap<String, Executor>,
     limits: Limits,
     registry: Mutex<Registry>,
@@ -195,6 +204,9 @@ pub struct Core {
 #[derive(Default)]
 struct Registry {
     runs: HashMap<(String, String), Arc<RunShared>>,
+    /// Record keys whose record could not be read, with the reason. Their
+    /// identities are blocked: an unreadable record never authorizes a replay.
+    unreadable: HashMap<String, String>,
     next_seq: u64,
     shutting_down: bool,
 }
@@ -229,16 +241,30 @@ impl Core {
                 return Err(error("executor names must be unique".into()));
             }
         }
-        fs::create_dir_all(&config.state_dir)
-            .map_err(|e| error(format!("state dir `{}`: {e}", config.state_dir.display())))?;
-        let instance_dir = create_instance_dir(&config.state_dir)
-            .map_err(|e| error(format!("state dir `{}`: {e}", config.state_dir.display())))?;
+        let (state_dir, store_lock) =
+            store::open(&config.state_dir, &project_root).map_err(error)?;
+        let listed = store::list(&state_dir)
+            .map_err(|e| error(format!("state dir `{}`: {e}", state_dir.display())))?;
+        let mut registry = Registry::default();
+        for (key, dir) in listed {
+            match RunShared::load(dir, &key) {
+                Ok(run) => {
+                    let identity = (run.request.caller.clone(), run.request.request_id.clone());
+                    registry.runs.insert(identity, Arc::new(run));
+                }
+                Err(reason) => {
+                    registry.unreadable.insert(key, reason);
+                }
+            }
+        }
         Ok(Self {
             project_root,
-            instance_dir,
+            state_dir,
+            instance: instance_token(),
+            store_lock: Arc::new(store_lock),
             executors,
             limits: config.limits,
-            registry: Mutex::default(),
+            registry: Mutex::new(registry),
             running: Arc::default(),
         })
     }
@@ -249,7 +275,7 @@ impl Core {
         Capability {
             contract: CONTRACT,
             project_root: self.project_root.clone(),
-            state_dir: self.instance_dir.clone(),
+            state_dir: self.state_dir.clone(),
             executors,
             limits: self.limits.clone(),
         }
@@ -268,7 +294,7 @@ impl Core {
         let mut registry = lock(&self.registry);
         let key = (caller.to_owned(), request.request_id.clone());
         if let Some(existing) = registry.runs.get(&key) {
-            return if existing.fingerprint == fingerprint {
+            return if existing.fingerprint == hex(&fingerprint) {
                 Ok(Submitted {
                     disposition: Disposition::Existing,
                     run: existing.view(),
@@ -279,11 +305,17 @@ impl Core {
                 })
             };
         }
+        let record_key = store::record_key(caller, &request.request_id);
+        if let Some(reason) = registry.unreadable.get(&record_key) {
+            return Err(SubmitError::RecordUnreadable {
+                reason: reason.clone(),
+            });
+        }
         let (executor, workdir_resolved) = resolved?;
         if registry.shutting_down {
             return Err(SubmitError::ShuttingDown);
         }
-        if registry.runs.len() >= self.limits.max_records {
+        if registry.runs.len() + registry.unreadable.len() >= self.limits.max_records {
             return Err(SubmitError::Capacity {
                 resource: "accepted request records",
                 limit: self.limits.max_records,
@@ -296,14 +328,8 @@ impl Core {
                 limit: self.limits.max_running,
             });
         }
-        self.running.fetch_add(1, Ordering::SeqCst);
         registry.next_seq += 1;
         let seq = registry.next_seq;
-        let instance = self
-            .instance_dir
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
         let info = RequestInfo {
             caller: caller.to_owned(),
             request_id: request.request_id.clone(),
@@ -316,23 +342,30 @@ impl Core {
             code_bytes: request.code.len(),
             args: request.args.clone(),
         };
-        let run = Arc::new(RunShared::new(
-            format!("{instance}.{seq}"),
-            fingerprint,
-            info,
-            self.instance_dir.join(seq.to_string()),
-            self.limits.max_stream_bytes,
-        ));
+        let record = store::Accepted {
+            run_id: format!("{}.{seq}", self.instance),
+            fingerprint: hex(&fingerprint),
+            request: info,
+            accepted_at: SystemTime::now(),
+            stream_limit: self.limits.max_stream_bytes,
+        };
+        // Committed under the registry lock: a concurrent duplicate either sees
+        // the committed record or waits for this decision.
+        let dir = store::commit(&self.state_dir, &record_key, &record, &request.code)
+            .map_err(|e| SubmitError::Storage(format!("record not saved, nothing started: {e}")))?;
+        fault::point("committed");
+        self.running.fetch_add(1, Ordering::SeqCst);
+        let run = Arc::new(RunShared::accepted(record, dir));
         registry.runs.insert(key, Arc::clone(&run));
         drop(registry);
 
         run::dispatch(
             &run,
             executor,
-            &request.code,
             &request.args,
             &self.limits,
             &self.running,
+            &self.store_lock,
         );
         Ok(Submitted {
             disposition: Disposition::Accepted,
@@ -379,13 +412,48 @@ impl Core {
             .read(stream, offset, max_bytes)
     }
 
+    /// Removes a terminal record so its storage and record slot are freed. The
+    /// identity is then unknown: a later submission under it runs again.
+    pub fn forget(&self, caller: &str, request_id: &str) -> Result<(), ForgetError> {
+        let run = self.find(caller, request_id)?;
+        let mut registry = lock(&self.registry);
+        if !run.view().is_terminal() {
+            return Err(ForgetError::NotTerminal(Box::new(run.view())));
+        }
+        store::discard(&self.state_dir, &run.dir, &run.run_id)
+            .map_err(|e| ForgetError::Io(e.to_string()))?;
+        registry
+            .runs
+            .remove(&(caller.to_owned(), request_id.to_owned()));
+        Ok(())
+    }
+
+    /// Records that could not be read, by record directory, with the reason.
+    /// Their identities are rejected until the record is repaired or removed
+    /// by hand; Core never re-dispatches them.
+    pub fn unreadable_records(&self) -> Vec<(PathBuf, String)> {
+        let records = self.state_dir.join(store::RECORDS);
+        let mut list: Vec<_> = lock(&self.registry)
+            .unreadable
+            .iter()
+            .map(|(key, reason)| (records.join(key), reason.clone()))
+            .collect();
+        list.sort();
+        list
+    }
+
     /// Rejects new requests, asks every held run to stop and waits for
     /// confirmation. Records stay readable until the Core is dropped.
     pub fn shutdown(&self) -> ShutdownReport {
         let runs: Vec<Arc<RunShared>> = {
             let mut registry = lock(&self.registry);
             registry.shutting_down = true;
-            registry.runs.values().cloned().collect()
+            registry
+                .runs
+                .values()
+                .filter(|run| run.held())
+                .cloned()
+                .collect()
         };
         let held: Vec<Arc<RunShared>> = runs
             .into_iter()
@@ -458,9 +526,18 @@ impl Core {
 }
 
 impl Drop for Core {
+    /// Stops held runs; records stay in the state dir. The store stays locked
+    /// until every holder thread has saved its last fact and let go, so a Core
+    /// opened right afterwards never races a predecessor's writes.
     fn drop(&mut self) {
-        if self.shutdown().not_confirmed.is_empty() {
-            let _ = fs::remove_dir_all(&self.instance_dir);
+        let report = self.shutdown();
+        if !report.not_confirmed.is_empty() {
+            // Those holders keep the store locked until they finish.
+            return;
+        }
+        let deadline = Instant::now() + SHUTDOWN_MARGIN;
+        while Arc::strong_count(&self.store_lock) > 1 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 }
@@ -487,24 +564,12 @@ fn resolve_workdir(project_root: &Path, workdir: &Path) -> Result<PathBuf, Workd
     Ok(resolved)
 }
 
-fn create_instance_dir(state_dir: &Path) -> io::Result<PathBuf> {
+fn instance_token() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    for attempt in 0..16u32 {
-        let name = format!("{:x}-{}-{attempt}", nanos, std::process::id());
-        let dir = state_dir.join(name);
-        match fs::create_dir(&dir) {
-            Ok(()) => return Ok(dir),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "no fresh instance directory name",
-    ))
+    format!("{nanos:x}-{}", std::process::id())
 }
 
 fn check_identity(kind: &str, value: &str) -> Result<(), String> {
@@ -550,6 +615,6 @@ fn fingerprint(request: &RunRequest) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

@@ -764,31 +764,37 @@ fn a_known_start_failure_is_recorded_and_never_retried() {
 }
 
 #[test]
-fn run_files_that_cannot_be_prepared_mean_no_dispatch() {
+fn a_record_that_cannot_be_saved_means_no_acceptance_and_no_dispatch() {
     let fx = fixture();
-    let state = fx.core.capability().state_dir;
-    fs::set_permissions(&state, fs::Permissions::from_mode(0o500)).unwrap();
-    let submitted = fx.core.submit(CALLER, request("unprepared", SUM, &["3"]));
-    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    let records = fx.core.capability().state_dir.join("records");
+    fs::set_permissions(&records, fs::Permissions::from_mode(0o500)).unwrap();
+    let submitted = fx.core.submit(CALLER, request("unsaved", SUM, &["3"]));
+    fs::set_permissions(&records, fs::Permissions::from_mode(0o700)).unwrap();
 
-    let view = finished(&fx.core, "unprepared");
-    assert_eq!(submitted.unwrap().disposition, Disposition::Accepted);
-    let RunStatus::NotStarted { reason } = &view.status else {
-        panic!("expected NotStarted, got {:?}", view.status);
+    let Err(SubmitError::Storage(reason)) = submitted else {
+        panic!("expected a storage error, got {submitted:?}");
     };
-    assert!(reason.contains("could not be prepared"), "{reason}");
+    assert!(reason.contains("nothing started"), "{reason}");
+    assert!(matches!(
+        fx.core.lookup(CALLER, "unsaved"),
+        Err(LookupError::NotFound { .. })
+    ));
     assert!(dispatches(&fx.work).is_empty());
+    // Once storage works again the identity is still free and runs once.
+    fx.core
+        .submit(CALLER, request("unsaved", SUM, &["3"]))
+        .unwrap();
+    finished(&fx.core, "unsaved");
+    assert_eq!(dispatches(&fx.work).len(), 1);
 }
 
 #[test]
-fn shutdown_stops_held_runs_and_drop_removes_instance_files() {
+fn shutdown_stops_held_runs_and_records_outlive_the_core() {
     let fx = fixture();
     let gate = Gate::new(&fx.root, "held");
     fx.core.submit(CALLER, gated("held", &gate, GATED)).unwrap();
     gate.wait_started();
     let pid = pid_of(&fx.core.lookup(CALLER, "held").unwrap());
-    let state = fx.core.capability().state_dir;
-    assert!(state.is_dir());
 
     let report = fx.core.shutdown();
     let view = fx.core.lookup(CALLER, "held").unwrap();
@@ -812,8 +818,11 @@ fn shutdown_stops_held_runs_and_drop_removes_instance_files() {
         Disposition::Existing
     );
 
+    let config = CoreConfig::new(fx.work.parent().unwrap(), fx.root.join("state"))
+        .executor(Executor::new("sh", "/bin/sh"));
     drop(fx.core);
-    assert!(!state.exists());
+    let reopened = Core::open(config).unwrap();
+    assert_eq!(reopened.lookup(CALLER, "held").unwrap(), view);
     assert_eq!(dispatches(&fx.work).len(), 1);
 }
 

@@ -2,7 +2,9 @@
 //!
 //! Run with `cargo run --example managed_run`. It submits a task, finds it again
 //! as a second waiter, reads the retained output and the real product file, and
-//! shows a duplicate, a conflicting request and a rejected object.
+//! shows a duplicate, a conflicting request and a rejected object. It then
+//! drops the Core, opens a new one on the same state dir, finds the run again
+//! and shows that resubmitting it dispatches nothing.
 
 use std::error::Error;
 use std::fs;
@@ -19,10 +21,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tmp = tempfile::tempdir()?;
     let project = tmp.path().join("project");
     fs::create_dir_all(project.join("analysis"))?;
-    let core = Core::open(
-        CoreConfig::new(&project, tmp.path().join("state"))
-            .executor(Executor::new("sh", "/bin/sh")),
-    )?;
+    let config = CoreConfig::new(&project, tmp.path().join("state"))
+        .executor(Executor::new("sh", "/bin/sh"));
+    let core = Core::open(config.clone())?;
     let capability = core.capability();
     println!(
         "executors: {:?}",
@@ -90,7 +91,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let outside = RunRequest {
         request_id: "escape".into(),
         workdir: "../".into(),
-        ..request
+        ..request.clone()
     };
     if let Err(error) = core.submit("agent-a", outside) {
         println!("rejected: {error}");
@@ -98,5 +99,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Err(error) = core.lookup("agent-b", "sum-100") {
         println!("other caller: {error}");
     }
+
+    drop(core);
+    let core = Core::open(config)?;
+    let found = core.lookup("agent-a", "sum-100")?;
+    println!(
+        "after reopening: run {} terminal {}",
+        found.run_id,
+        found.is_terminal()
+    );
+    let again = core.submit("agent-a", request)?;
+    println!(
+        "resubmitted after reopening: {:?} run {}",
+        again.disposition, again.run.run_id
+    );
     Ok(())
 }

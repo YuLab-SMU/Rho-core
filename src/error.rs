@@ -50,6 +50,13 @@ pub enum SubmitError {
         limit: usize,
     },
     ShuttingDown,
+    /// The record for this identity exists but cannot be read. Nothing is
+    /// started: it may already have run.
+    RecordUnreadable {
+        reason: String,
+    },
+    /// The record could not be saved durably, so nothing was dispatched.
+    Storage(String),
 }
 
 impl fmt::Display for SubmitError {
@@ -91,6 +98,12 @@ impl fmt::Display for SubmitError {
                 write!(f, "limit of {limit} {resource} reached, nothing started")
             }
             Self::ShuttingDown => write!(f, "Core is shutting down, nothing started"),
+            Self::RecordUnreadable { reason } => write!(
+                f,
+                "the record for this request id cannot be read ({reason}); it may already have \
+                 run, so nothing was started"
+            ),
+            Self::Storage(reason) => write!(f, "{reason}"),
         }
     }
 }
@@ -101,8 +114,8 @@ impl std::error::Error for SubmitError {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LookupError {
     InvalidIdentity(String),
-    /// Nothing was accepted under this identity during this Core instance.
-    /// This is not evidence that no process ran elsewhere.
+    /// No readable record of this identity is in the state dir. This is not
+    /// evidence that no process ran elsewhere or under an unreadable record.
     NotFound {
         caller: String,
         request_id: String,
@@ -115,7 +128,7 @@ impl fmt::Display for LookupError {
             Self::InvalidIdentity(reason) => write!(f, "invalid identity: {reason}"),
             Self::NotFound { caller, request_id } => write!(
                 f,
-                "no request `{request_id}` accepted for caller `{caller}` in this Core instance"
+                "no readable record of request `{request_id}` for caller `{caller}`"
             ),
         }
     }
@@ -150,6 +163,34 @@ impl fmt::Display for ReadError {
 impl std::error::Error for ReadError {}
 
 impl From<LookupError> for ReadError {
+    fn from(error: LookupError) -> Self {
+        Self::Lookup(error)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ForgetError {
+    Lookup(LookupError),
+    /// The run may still be running; only terminal records can be removed.
+    NotTerminal(Box<RunView>),
+    Io(String),
+}
+
+impl fmt::Display for ForgetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Lookup(error) => error.fmt(f),
+            Self::NotTerminal(run) => {
+                write!(f, "run {} is not terminal; nothing removed", run.run_id)
+            }
+            Self::Io(error) => write!(f, "record could not be removed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ForgetError {}
+
+impl From<LookupError> for ForgetError {
     fn from(error: LookupError) -> Self {
         Self::Lookup(error)
     }

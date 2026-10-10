@@ -8,9 +8,17 @@ repository = "https://github.com/YuLab-SMU/Rho-core"
 description = "Managed local runs with caller-held request identity, held execution and bounded result retrieval"
 publish = false
 
+[features]
+# Test-only crash points for fault experiments; see src/fault.rs.
+fault-injection = []
+
 [dependencies]
 libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sha2 = "0.11"
 
 [dev-dependencies]
+# Enables the crash points for this crate's own tests and examples only.
+rho-core = { path = ".", features = ["fault-injection"] }
 tempfile = "3"

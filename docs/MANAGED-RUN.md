@@ -1,11 +1,12 @@
-# 受管运行：阶段 1 调用契约
+# 受管运行：调用契约
 
 本文是 `rho-core` 首个受管流程的契约与能力说明，也是它的唯一维护源：
 `rho_core::CONTRACT` 在运行时返回本文全文，`Core::capability()` 同时给出本实例的
 项目根、执行方、实际限额与运行文件位置。可运行调用见
 [`examples/managed_run.rs`](../examples/managed_run.rs)，行为回归见
-[`tests/managed_run.rs`](../tests/managed_run.rs)。全部保证只在一个 `Core` 值的
-寿命内成立；跨重启持久化属于阶段 2，尚未实现。
+[`tests/managed_run.rs`](../tests/managed_run.rs)，跨重启与故障实验见
+[`tests/restart.rs`](../tests/restart.rs)。受理记录持久保存在 `state_dir`：之后在同一
+目录上打开的 `Core` 找得到它们，不会再次派发；前一实例持有中的运行如实报告为未持有。
 
 ## 何时使用
 
@@ -42,14 +43,16 @@ let chunk = core.read_output("agent-a", "sum-100", Stream::Stdout, 0, 64 * 1024)
 
 | 方法 | 作用 |
 | --- | --- |
-| `Core::open(config)` | 规范化项目根，检查执行方与限额，在 `state_dir` 下新建本实例目录 |
+| `Core::open(config)` | 规范化项目根，检查执行方与限额，独占打开 `state_dir` 并载入已有记录 |
 | `submit(caller, request)` | 受理并启动，或返回该身份已有的受理；`Disposition::Accepted` 或 `Existing` |
 | `lookup(caller, request_id)` | 立即返回已知事实 |
 | `wait(caller, request_id, timeout)` | 最多等待 `timeout` 直到终态，返回当时的事实；超时只结束这个等待者 |
 | `read_output(caller, request_id, stream, offset, max_bytes)` | 从 `offset` 读取已保留输出，单次最多 `min(max_bytes, max_read_bytes)` 字节 |
 | `cancel(caller, request_id)` | 记录停止请求并开始发信号；确认以终态为准 |
-| `shutdown()` | 拒绝新受理，请求停止全部持有中的运行并等待确认 |
-| `capability()` | 本文、项目根、执行方、实际限额与本实例运行目录 |
+| `shutdown()` | 拒绝新受理，请求停止本实例持有中的运行并等待确认 |
+| `forget(caller, request_id)` | 删除一个已到终态的记录；之后该身份不再去重 |
+| `unreadable_records()` | 读不出的记录目录与原因 |
+| `capability()` | 本文、项目根、执行方、实际限额与 `state_dir` |
 
 `Core` 可在线程间共享（引用或 `Arc`）。
 
@@ -58,10 +61,10 @@ let chunk = core.read_output("agent-a", "sum-100", Stream::Stdout, 0, 64 * 1024)
 - **执行方**由应用在 `CoreConfig` 中选定：名称、绝对路径程序和前置参数，不做 `PATH`
   查找。请求只能按名称选择已配置的执行方。
 - **实际执行**：`<program> <执行方参数...> <代码快照路径> <请求参数...>`，工作目录为
-  解析后的 `workdir`，标准输入为空，标准输出与标准错误由 Core 读取，环境变量继承
+  解析后的 `workdir`，标准输入为空文件（读到即结束），标准输出与标准错误由 Core 读取，环境变量继承
   Core 所在进程。`code` 在受理后写入本次运行的快照文件，执行的正是该快照。
 - **身份**：`caller` 与 `request_id` 均为 1–128 个 `[A-Za-z0-9._:@-]` 字符。身份的
-  范围是“本 `Core` 实例的项目 × `caller`”。可信单用户环境中 `caller` 是命名空间，
+  范围是“`state_dir` 绑定的项目 × `caller`”，跨 `Core` 实例有效。可信单用户环境中 `caller` 是命名空间，
   不是认证。
 - **同一请求**：`executor`、`workdir`（按给出的字节，`work` 与 `./work` 不同）、`code`
   与 `args` 逐字节相同，以带长度前缀的 SHA-256 指纹比较。
@@ -69,8 +72,8 @@ let chunk = core.read_output("agent-a", "sum-100", Stream::Stdout, 0, 64 * 1024)
   - 同身份不同请求：`SubmitError::Conflict`，附带原记录；原记录不变，不派发；
   - 有意再执行：使用新的 `request_id`。
 - **并发**：同一身份的受理决定在一个锁内作出，并发提交中只有一个得到 `Accepted`。
-  重复送达优先于其他检查：原请求被受理后，即使当前目录已不存在或实例正在关闭，
-  同身份同请求仍返回原受理。
+  重复送达优先于其他检查：原请求被受理后，即使当前目录已不存在、实例正在关闭或
+  已经重启，同身份同请求仍返回原受理。
 
 ## 对象与范围检查
 
@@ -84,6 +87,8 @@ let chunk = core.read_output("agent-a", "sum-100", Stream::Stdout, 0, 64 * 1024)
 | `Workdir { NotFound / NotADirectory / Unreadable }` | 解析失败或不是目录 |
 | `Workdir { OutsideProject }` | 规范化（含符号链接）后位于项目根之外 |
 | `Capacity` / `ShuttingDown` | 见资源与关闭 |
+| `RecordUnreadable` | 该身份的记录存在但读不出；它可能已经运行过，因此不派发 |
+| `Storage` | 受理记录未能持久保存；不受理、不派发，身份仍空闲 |
 
 这是包含性检查，不是沙箱：任务以用户的 OS 权限运行，可以访问 OS 允许的任何路径；
 检查与进程启动之间目录仍可能被替换。读取、等待、取消与读输出只在同一 `caller`
@@ -95,12 +100,13 @@ let chunk = core.read_output("agent-a", "sum-100", Stream::Stdout, 0, 64 * 1024)
 
 | 字段 | 内容 |
 | --- | --- |
-| `run_id` | 本实例内唯一的执行身份；进程号不是身份 |
+| `run_id` | 执行身份，含受理它的实例标记；进程号不是身份 |
 | `request` | 原请求：`caller`、`request_id`、执行方名称与程序、`workdir` 及其解析结果、代码 SHA-256 与字节数、实际参数 |
 | `accepted_at` | 受理时刻 |
-| `status` | `Starting`、`NotStarted { reason }`、`Running { pid, spawned_at }`、`Finished { pid, spawned_at, exit, exit_observed_at, group_released }` |
+| `status` | `Starting`、`NotStarted { reason }`、`Running { pid, spawned_at }`、`Finished { pid, spawned_at, exit, exit_observed_at, group_released }`、`Detached { dispatched_at, pid, spawned_at, present, observed_at }` |
 | `cancel` | 停止请求的原因与时刻，以及实际发出 SIGTERM、SIGKILL 的时刻 |
 | `stdout` / `stderr` | 已保留字节、已读到字节、上限、是否读到流结束、保留错误 |
+| `unsaved` | 已知但尚未写入存储的事实；之后读取时重试保存，在此之前重启看不到它 |
 
 - 时间均为 Core 的观察时刻，不读取原生进程启动时间。
 - `pid` 只在 `Finished` 之前指向该进程；回收后可能被系统复用，Core 不再向它发信号。
@@ -110,7 +116,8 @@ let chunk = core.read_output("agent-a", "sum-100", Stream::Stdout, 0, 64 * 1024)
   设为忽略，导致子进程被自动回收）。
 - `truncated()` 为真表示有字节超过保留上限，已读到但未保留；`retention_error` 表示保留
   写入或管道读取失败，此后的字节没有保留。这些都不改变进程的退出事实。
-- `LookupError::NotFound` 只说明本实例在该范围内没有受理此身份，不证明别处没有运行。
+- `LookupError::NotFound` 只说明 `state_dir` 中没有该身份的可读记录，不证明别处没有
+  运行，也不覆盖读不出的记录（见 `unreadable_records()`）。
 
 ## 持有、停止与释放
 
@@ -129,14 +136,15 @@ let chunk = core.read_output("agent-a", "sum-100", Stream::Stdout, 0, 64 * 1024)
   确认。对已结束的运行取消不产生变化。取消不回滚任务已写入的文件或其他效果。
 - **关闭**：`shutdown()` 拒绝新身份（已有身份仍可找回），对未结束运行按上述方式请求停止，
   最多等待 `stop_grace + output_close_grace + 1s`，报告已确认停止与未确认的运行。
-  `Core` 被 drop 时执行同样的关闭；全部确认后删除本实例的运行目录。
+  `Core` 被 drop 时执行同样的关闭，记录保留。未持有的运行（`Detached`）不发信号、
+  不等待，取消也不记录：本实例无法对它采取动作。
 
 ## 资源与超限
 
 | 资源（`Limits` 字段） | 默认值 | 超限行为 |
 | --- | --- | --- |
 | 同时持有的进程 `max_running` | 4 | 新身份被拒绝（`Capacity`），不排队；重复送达不受影响 |
-| 本实例受理记录 `max_records` | 256 | 新身份被拒绝；从不淘汰旧记录 |
+| `state_dir` 中的记录 `max_records` | 256 | 计入之前实例与读不出的记录；新身份被拒绝；从不淘汰，只能用 `forget` 删除 |
 | 代码 `max_code_bytes` | 1 MiB | `InvalidRequest` |
 | 参数个数 `max_args`、总字节 `max_arg_bytes` | 256、64 KiB | `InvalidRequest` |
 | 每路输出保留 `max_stream_bytes` | 1 MiB | 超出部分读取后丢弃并计数，`truncated()` 为真 |
@@ -149,17 +157,37 @@ Core 不限制任务自身写入项目的文件、网络或其他资源，这些
 
 ## 保留期限与存储
 
-- 记录、代码快照与保留输出只在 `Core` 值的寿命内存在，并且只在内存记录中被索引；
-  没有删除或过期接口，寿命内不会出现身份过期后悄悄重新执行。
-- 新的 `Core` 实例不认识之前实例的身份：再次提交会被当作新请求执行。需要跨进程寿命
-  去重的调用方必须等待阶段 2，或自行保证不在新实例中重复提交。
-- 运行文件位于 `state_dir/<实例>/<序号>/`：`script`、`stdout`、`stderr`，权限 0600。
-  它们可能包含代码、私有数据或程序打印的凭据，不做脱敏。
-- Core 所在进程崩溃时：运行中的任务在各自进程组中继续，不再被持有；实例目录残留；
-  新实例不清理其他实例的目录，因为无法确认它们是否仍属于存活的进程。
+- 一个 `state_dir` 同一时刻只由一个 `Core` 打开（文件锁），并绑定第一次打开它的项目根；
+  换项目或第二个实例打开会被拒绝。
+- 每个身份一个记录目录 `state_dir/records/<身份哈希>/`：`request.json`（原请求，受理时
+  写入后不变）、`script`、`stdout`、`stderr`，以及按发生顺序出现的 `dispatch.json`、
+  `spawned.json`、`cancel.json`、`outcome.json`，权限 0600。它们可能包含代码、私有数据
+  或程序打印的凭据，不做脱敏。
+- **受理**：记录先在 `pending/` 写好并 fsync，再整体 rename 到 `records/` 并 fsync 目录，
+  这是受理点；之后才派发。保存失败返回 `Storage`，什么都不启动。
+- **派发**：启动进程之前先持久写入 `dispatch.json`。之后的事实写入失败不改变原生事实，
+  在 `unsaved` 中报告并在之后读取时重试。
+- **重启后**，按已保存的事实报告，不推测：
+
+  | 已保存的事实 | 重开后的状态 |
+  | --- | --- |
+  | 无 `dispatch.json` | `NotStarted`：已知没有启动进程（此结论随即保存） |
+  | 有 `dispatch.json`，无 `spawned.json` | `Detached { pid: None }`：是否启动未知 |
+  | 有 `spawned.json`，无 `outcome.json` | `Detached { pid: Some(..) }`：退出状态未知 |
+  | 有 `outcome.json` | 原样返回，含保留输出 |
+
+  `present` 表示观察时是否仍有该运行的进程持有运行锁：运行锁作为标准输入由进程组
+  继承，最后一个成员退出时释放。`present` 为假即为终态。之后的输出不再保留
+  （`retention_error`），因为读取管道的宿主已不存在；任务写标准输出时可能因此收到
+  SIGPIPE。重复提交始终返回原记录，不重新派发。
+- 任何事实读不出时整个记录视为读不出，该身份被拒绝（`RecordUnreadable`），需人工修复
+  或删除；Core 不把它当作“没有记录”。
+- 记录不过期。`forget` 只删除终态记录：先移出 `records/` 再删除，中断不会留下半删的
+  已受理记录；删除后同身份再次提交会重新执行。
 
 ## 不提供的保证
 
-不提供跨重启去重或恢复、外部 exactly-once、多个运行之间的事务、回滚、自动重试，
+不在重启后重新持有、停止或回收前一实例的进程，不补记它未保存的退出状态；不提供
+外部 exactly-once、多个运行之间的事务、回滚、自动重试，
 也不登记 Core 之外的进程或文件修改。工作目录检查不是隔离。平台仅限 Unix；实际验证过的
 平台见 [进度总览](PROGRESS.md)。

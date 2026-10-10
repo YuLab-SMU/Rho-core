@@ -1,9 +1,9 @@
-//! One accepted run: its record, the thread holding its process, and retained output.
+//! One accepted run: its durable record, the thread holding its process, and
+//! retained output.
 
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
-use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -12,8 +12,11 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::ReadError;
-use crate::{Executor, Limits, os};
+use crate::store::{self, Accepted, Dispatch, Outcome, Spawned};
+use crate::{Executor, Limits, fault, os};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const READ_BUFFER: usize = 64 * 1024;
@@ -27,14 +30,14 @@ pub enum Stream {
 impl Stream {
     fn file_name(self) -> &'static str {
         match self {
-            Self::Stdout => "stdout",
-            Self::Stderr => "stderr",
+            Self::Stdout => store::STDOUT,
+            Self::Stderr => store::STDERR,
         }
     }
 }
 
 /// The original request as accepted, plus what Core resolved for it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestInfo {
     pub caller: String,
     pub request_id: String,
@@ -50,7 +53,7 @@ pub struct RequestInfo {
     pub args: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Exit {
     Code(i32),
     Signal(i32),
@@ -59,7 +62,7 @@ pub enum Exit {
 }
 
 /// What Core knows about the native process. Times are Core observation times.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RunStatus {
     /// Accepted; the process is being started.
     Starting,
@@ -81,15 +84,32 @@ pub enum RunStatus {
         exit_observed_at: SystemTime,
         group_released: bool,
     },
+    /// Dispatched by an earlier Core instance that stopped before recording an
+    /// outcome. No Core holds it: it is not signalled, reaped or stopped. `pid`
+    /// and `spawned_at` are `None` when that instance stopped between recording
+    /// the dispatch and recording the spawn, so whether a process started is
+    /// unknown. `present` is whether a process of this run still held the run
+    /// lock at `observed_at`; the exit status is not known either way.
+    Detached {
+        dispatched_at: SystemTime,
+        pid: Option<u32>,
+        spawned_at: Option<SystemTime>,
+        present: bool,
+        observed_at: SystemTime,
+    },
 }
 
 impl RunStatus {
+    /// Nothing of this run is running or held any longer.
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::NotStarted { .. } | Self::Finished { .. })
+        matches!(
+            self,
+            Self::NotStarted { .. } | Self::Finished { .. } | Self::Detached { present: false, .. }
+        )
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CancelReason {
     Caller,
     Shutdown,
@@ -97,7 +117,7 @@ pub enum CancelReason {
 
 /// A stop request and the signals actually sent. Stop is confirmed only by
 /// [`RunStatus::Finished`]; nothing is rolled back.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancelInfo {
     pub reason: CancelReason,
     pub requested_at: SystemTime,
@@ -105,7 +125,7 @@ pub struct CancelInfo {
     pub kill_sent_at: Option<SystemTime>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamInfo {
     /// Bytes kept and readable through [`crate::Core::read_output`].
     pub retained_bytes: u64,
@@ -133,6 +153,9 @@ pub struct RunView {
     pub cancel: Option<CancelInfo>,
     pub stdout: StreamInfo,
     pub stderr: StreamInfo,
+    /// A known fact that could not be saved yet. Saving is retried on later
+    /// reads; until then a restart would not see that fact.
+    pub unsaved: Option<String>,
 }
 
 impl RunView {
@@ -151,12 +174,20 @@ pub struct OutputChunk {
     pub run_terminal: bool,
 }
 
+/// A fact known in memory whose durable write failed; retried on later reads.
+#[derive(PartialEq)]
+enum Pending {
+    Spawned,
+    Cancel,
+    Outcome,
+}
+
 pub(crate) struct RunShared {
     pub(crate) run_id: String,
-    pub(crate) fingerprint: [u8; 32],
+    pub(crate) fingerprint: String,
     pub(crate) request: RequestInfo,
     accepted_at: SystemTime,
-    dir: PathBuf,
+    pub(crate) dir: PathBuf,
     state: Mutex<State>,
     changed: Condvar,
 }
@@ -166,6 +197,8 @@ struct State {
     cancel: Option<CancelInfo>,
     stdout: StreamInfo,
     stderr: StreamInfo,
+    pending: Vec<Pending>,
+    unsaved: Option<String>,
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -174,35 +207,128 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn mark(state: &mut State, fact: Pending) {
+    if !state.pending.contains(&fact) {
+        state.pending.push(fact);
+    }
+}
+
+fn empty_stream(limit_bytes: u64) -> StreamInfo {
+    StreamInfo {
+        retained_bytes: 0,
+        observed_bytes: 0,
+        limit_bytes,
+        eof: false,
+        retention_error: None,
+    }
+}
+
 impl RunShared {
-    pub(crate) fn new(
-        run_id: String,
-        fingerprint: [u8; 32],
-        request: RequestInfo,
-        dir: PathBuf,
-        stream_limit: u64,
-    ) -> Self {
-        let stream = StreamInfo {
-            retained_bytes: 0,
-            observed_bytes: 0,
-            limit_bytes: stream_limit,
-            eof: false,
-            retention_error: None,
-        };
-        Self {
-            run_id,
-            fingerprint,
-            request,
-            accepted_at: SystemTime::now(),
+    /// A newly committed record; the caller dispatches it next.
+    pub(crate) fn accepted(record: Accepted, dir: PathBuf) -> Self {
+        let stream = empty_stream(record.stream_limit);
+        Self::with_state(
+            record,
             dir,
-            state: Mutex::new(State {
+            State {
                 status: RunStatus::Starting,
                 cancel: None,
                 stdout: stream.clone(),
                 stderr: stream,
-            }),
+                pending: Vec::new(),
+                unsaved: None,
+            },
+        )
+    }
+
+    fn with_state(record: Accepted, dir: PathBuf, state: State) -> Self {
+        Self {
+            run_id: record.run_id,
+            fingerprint: record.fingerprint,
+            request: record.request,
+            accepted_at: record.accepted_at,
+            dir,
+            state: Mutex::new(state),
             changed: Condvar::new(),
         }
+    }
+
+    /// Rebuilds a record written by an earlier Core instance from its facts.
+    /// Any unreadable fact makes the whole record unreadable.
+    pub(crate) fn load(dir: PathBuf, key: &str) -> Result<Self, String> {
+        let record: Accepted =
+            store::read_fact(&dir, store::REQUEST)?.ok_or("`request.json` is missing")?;
+        if store::record_key(&record.request.caller, &record.request.request_id) != key {
+            return Err("`request.json` names a different identity than its directory".into());
+        }
+        let cancel: Option<CancelInfo> = store::read_fact(&dir, store::CANCEL)?;
+        let outcome: Option<Outcome> = store::read_fact(&dir, store::OUTCOME)?;
+        let dispatch: Option<Dispatch> = store::read_fact(&dir, store::DISPATCH)?;
+        let spawned: Option<Spawned> = store::read_fact(&dir, store::SPAWNED)?;
+        let limit = record.stream_limit;
+        let mut save_outcome = false;
+        let state = if let Some(outcome) = outcome {
+            State {
+                status: outcome.status,
+                cancel: outcome.cancel.or(cancel),
+                stdout: outcome.stdout,
+                stderr: outcome.stderr,
+                pending: Vec::new(),
+                unsaved: None,
+            }
+        } else if dispatch.is_none() {
+            // The dispatch fact is synced before any process is started.
+            save_outcome = true;
+            State {
+                status: RunStatus::NotStarted {
+                    reason: "the Core instance that accepted this request stopped before \
+                             dispatching it; no process was started"
+                        .into(),
+                },
+                cancel,
+                stdout: empty_stream(limit),
+                stderr: empty_stream(limit),
+                pending: Vec::new(),
+                unsaved: None,
+            }
+        } else {
+            let dispatched_at = dispatch.map_or(record.accepted_at, |d| d.at);
+            let note = "the Core instance holding this run stopped; later output was not \
+                        retained"
+                .to_owned();
+            let stream = |stream: Stream| {
+                let retained = fs::metadata(dir.join(stream.file_name())).map_or(0, |m| m.len());
+                StreamInfo {
+                    retained_bytes: retained.min(limit),
+                    observed_bytes: retained,
+                    limit_bytes: limit,
+                    eof: false,
+                    retention_error: Some(note.clone()),
+                }
+            };
+            let (present, observed_at) = probe(&dir);
+            State {
+                status: RunStatus::Detached {
+                    dispatched_at,
+                    pid: spawned.as_ref().map(|s| s.pid),
+                    spawned_at: spawned.as_ref().map(|s| s.spawned_at),
+                    present,
+                    observed_at,
+                },
+                cancel,
+                stdout: stream(Stream::Stdout),
+                stderr: stream(Stream::Stderr),
+                pending: Vec::new(),
+                unsaved: None,
+            }
+        };
+        let run = Self::with_state(record, dir, state);
+        if save_outcome {
+            let mut state = lock(&run.state);
+            mark(&mut state, Pending::Outcome);
+            run.flush(&mut state);
+        }
+        Ok(run)
     }
 
     fn view_of(&self, state: &State) -> RunView {
@@ -214,31 +340,59 @@ impl RunShared {
             cancel: state.cancel.clone(),
             stdout: state.stdout.clone(),
             stderr: state.stderr.clone(),
+            unsaved: state.unsaved.clone(),
         }
     }
 
+    /// Current facts. Retries unsaved facts and re-observes a detached run.
     pub(crate) fn view(&self) -> RunView {
-        self.view_of(&lock(&self.state))
+        let mut state = lock(&self.state);
+        self.refresh(&mut state);
+        self.view_of(&state)
     }
 
     pub(crate) fn wait(&self, timeout: Duration) -> RunView {
-        let guard = lock(&self.state);
-        let (guard, _) = self
-            .changed
-            .wait_timeout_while(guard, timeout, |state| !state.status.is_terminal())
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.view_of(&guard)
+        let deadline = Instant::now() + timeout;
+        let mut state = lock(&self.state);
+        loop {
+            self.refresh(&mut state);
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if state.status.is_terminal() || remaining.is_zero() {
+                return self.view_of(&state);
+            }
+            // A detached run changes without notification, so it is re-observed.
+            let slice = match state.status {
+                RunStatus::Detached { .. } => remaining.min(POLL_INTERVAL),
+                _ => remaining,
+            };
+            state = self
+                .changed
+                .wait_timeout(state, slice)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
     }
 
     pub(crate) fn request_cancel(&self, reason: CancelReason) -> RunView {
         let mut state = lock(&self.state);
-        if !state.status.is_terminal() && state.cancel.is_none() {
-            state.cancel = Some(CancelInfo {
+        self.refresh(&mut state);
+        // A detached run has no holder in this instance: nothing could act on
+        // a cancel, so none is recorded.
+        let held = matches!(
+            state.status,
+            RunStatus::Starting | RunStatus::Running { .. }
+        );
+        if held && state.cancel.is_none() {
+            let cancel = CancelInfo {
                 reason,
                 requested_at: SystemTime::now(),
                 term_sent_at: None,
                 kill_sent_at: None,
-            });
+            };
+            state.cancel = Some(cancel);
+            mark(&mut state, Pending::Cancel);
+            self.flush(&mut state);
+            fault::point("cancel-saved");
         }
         self.view_of(&state)
     }
@@ -250,7 +404,8 @@ impl RunShared {
         max_bytes: usize,
     ) -> Result<OutputChunk, ReadError> {
         let (info, run_terminal) = {
-            let state = lock(&self.state);
+            let mut state = lock(&self.state);
+            self.refresh(&mut state);
             let info = match stream {
                 Stream::Stdout => state.stdout.clone(),
                 Stream::Stderr => state.stderr.clone(),
@@ -280,6 +435,67 @@ impl RunShared {
         })
     }
 
+    fn refresh(&self, state: &mut State) {
+        if !state.pending.is_empty() {
+            self.flush(state);
+        }
+        if let RunStatus::Detached {
+            present: present @ true,
+            observed_at,
+            ..
+        } = &mut state.status
+        {
+            (*present, *observed_at) = probe(&self.dir);
+        }
+    }
+
+    /// Writes every pending fact; those that fail stay pending and are reported.
+    fn flush(&self, state: &mut State) {
+        let mut errors = Vec::new();
+        let pending = std::mem::take(&mut state.pending);
+        for fact in pending {
+            let (name, result) = match &fact {
+                Pending::Spawned => {
+                    let spawned = match state.status {
+                        RunStatus::Running { pid, spawned_at }
+                        | RunStatus::Finished {
+                            pid, spawned_at, ..
+                        } => Spawned { pid, spawned_at },
+                        _ => continue,
+                    };
+                    (
+                        store::SPAWNED,
+                        store::write_fact(&self.dir, store::SPAWNED, &spawned),
+                    )
+                }
+                Pending::Cancel => match &state.cancel {
+                    Some(cancel) => (
+                        store::CANCEL,
+                        store::write_fact(&self.dir, store::CANCEL, cancel),
+                    ),
+                    None => continue,
+                },
+                Pending::Outcome => {
+                    let outcome = Outcome {
+                        status: state.status.clone(),
+                        cancel: state.cancel.clone(),
+                        stdout: state.stdout.clone(),
+                        stderr: state.stderr.clone(),
+                    };
+                    (
+                        store::OUTCOME,
+                        store::write_fact(&self.dir, store::OUTCOME, &outcome),
+                    )
+                }
+            };
+            if let Err(error) = result {
+                errors.push(format!("`{name}` could not be saved: {error}"));
+                state.pending.push(fact);
+            }
+        }
+        state.unsaved = (!errors.is_empty()).then(|| errors.join("; "));
+    }
+
     fn cancel_requested(&self) -> bool {
         lock(&self.state).cancel.is_some()
     }
@@ -293,12 +509,26 @@ impl RunShared {
             } else {
                 cancel.term_sent_at = now;
             }
+            mark(&mut state, Pending::Cancel);
+            self.flush(&mut state);
         }
+    }
+
+    /// Whether this instance holds the run's process (or is starting it).
+    pub(crate) fn held(&self) -> bool {
+        matches!(
+            lock(&self.state).status,
+            RunStatus::Starting | RunStatus::Running { .. }
+        )
     }
 
     fn set_running(&self, pid: u32) -> SystemTime {
         let spawned_at = SystemTime::now();
-        lock(&self.state).status = RunStatus::Running { pid, spawned_at };
+        let mut state = lock(&self.state);
+        state.status = RunStatus::Running { pid, spawned_at };
+        mark(&mut state, Pending::Spawned);
+        fault::point("spawned");
+        self.flush(&mut state);
         spawned_at
     }
 
@@ -310,7 +540,10 @@ impl RunShared {
 
     fn not_started(&self, reason: String, running: &AtomicUsize) {
         running.fetch_sub(1, Ordering::SeqCst);
-        lock(&self.state).status = RunStatus::NotStarted { reason };
+        let mut state = lock(&self.state);
+        state.status = RunStatus::NotStarted { reason };
+        mark(&mut state, Pending::Outcome);
+        self.flush(&mut state);
         self.changed.notify_all();
     }
 
@@ -320,21 +553,47 @@ impl RunShared {
         let mut state = lock(&self.state);
         state.status = status;
         (state.stdout, state.stderr) = streams;
+        mark(&mut state, Pending::Outcome);
+        fault::point("exited");
+        self.flush(&mut state);
         self.changed.notify_all();
     }
 }
 
+/// Whether a process of the run still holds its run lock, and when that was
+/// observed. A lock that cannot be probed counts as possibly held.
+fn probe(dir: &Path) -> (bool, SystemTime) {
+    let present = match File::open(dir.join(store::RUN_LOCK)) {
+        Ok(file) => !matches!(store::try_lock(&file), Ok(true)),
+        Err(_) => true,
+    };
+    (present, SystemTime::now())
+}
+
 /// Starts the accepted run and hands its process to a holder thread. Every
 /// outcome ends in a terminal status that releases the reserved process slot.
+/// The record is already committed, so no outcome re-dispatches it.
 pub(crate) fn dispatch(
     run: &Arc<RunShared>,
     executor: &Executor,
-    code: &str,
     args: &[String],
     limits: &Limits,
     running: &Arc<AtomicUsize>,
+    store_lock: &Arc<File>,
 ) {
-    let (script, stdout_file, stderr_file) = match prepare(&run.dir, code) {
+    let files = open_run_files(&run.dir).and_then(|files| {
+        // Synced before the process exists, so a crash after this is never
+        // mistaken for "never dispatched".
+        store::write_fact(
+            &run.dir,
+            store::DISPATCH,
+            &Dispatch {
+                at: SystemTime::now(),
+            },
+        )?;
+        Ok(files)
+    });
+    let (lock_file, stdout_file, stderr_file) = match files {
         Ok(files) => files,
         Err(error) => {
             let reason = format!(
@@ -344,19 +603,32 @@ pub(crate) fn dispatch(
             return run.not_started(reason, running);
         }
     };
+    fault::point("dispatched");
     if run.cancel_requested() {
         return run.not_started(
             "cancel was requested before the process started".into(),
             running,
         );
     }
-    let mut command = Command::new(&executor.program);
+    // The run lock is the task's stdin: an empty file, so reads see EOF as
+    // with /dev/null. Its description is inherited by the process group and
+    // released only when the last member exits, so a later instance can tell
+    // whether one is still there. No pre_exec hook is used: std can then spawn
+    // without a fork window that would copy other descriptors, such as the
+    // store lock, into a half-started child.
+    let stdin = match lock_file.try_clone() {
+        Ok(file) => file,
+        Err(error) => {
+            return run.not_started(format!("run lock could not be shared: {error}"), running);
+        }
+    };
+    let mut command = Command::new(&run.request.program);
     command
         .args(&executor.args)
-        .arg(&script)
+        .arg(run.dir.join(store::SCRIPT))
         .args(args)
         .current_dir(&run.request.workdir_resolved)
-        .stdin(Stdio::null())
+        .stdin(Stdio::from(stdin))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
@@ -381,6 +653,8 @@ pub(crate) fn dispatch(
         pumps,
         limits: limits.clone(),
         running: Arc::clone(running),
+        lock: Some(lock_file),
+        _store: Arc::clone(store_lock),
     };
     let held = thread::Builder::new()
         .name(format!("rho-run-{}", run.run_id))
@@ -411,18 +685,17 @@ pub(crate) fn dispatch(
     }
 }
 
-fn prepare(dir: &Path, code: &str) -> io::Result<(PathBuf, File, File)> {
-    fs::create_dir(dir)?;
-    let create = |name: &str| {
-        fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(dir.join(name))
-    };
-    let script = dir.join("script");
-    create("script")?.write_all(code.as_bytes())?;
-    Ok((script, create("stdout")?, create("stderr")?))
+/// Opens the run lock and the two output files of a committed record. The
+/// script snapshot and the directory were written before the commit.
+fn open_run_files(dir: &Path) -> io::Result<(File, File, File)> {
+    let open = |name: &str| fs::OpenOptions::new().write(true).open(dir.join(name));
+    let lock_file = fs::File::open(dir.join(store::RUN_LOCK))?;
+    if !store::try_lock(&lock_file)? {
+        return Err(io::Error::other(
+            "another process still holds this run's lock",
+        ));
+    }
+    Ok((lock_file, open(store::STDOUT)?, open(store::STDERR)?))
 }
 
 fn exit_of(status: ExitStatus) -> Exit {
@@ -442,6 +715,10 @@ struct Holder {
     pumps: [Pump; 2],
     limits: Limits,
     running: Arc<AtomicUsize>,
+    /// Shared with the process group; released before the outcome is saved.
+    lock: Option<File>,
+    /// Keeps the store locked while this run is still held.
+    _store: Arc<File>,
 }
 
 impl Holder {
@@ -500,7 +777,12 @@ impl Holder {
             exit_observed_at,
             group_released,
         };
+        // Retained bytes are made durable before the outcome that counts them.
+        for pump in &self.pumps {
+            let _ = pump.file.sync_all();
+        }
         let streams = (self.pumps[0].info.clone(), self.pumps[1].info.clone());
+        drop(self.lock.take());
         self.run.finish(status, streams, &self.running);
     }
 
@@ -564,13 +846,7 @@ impl Pump {
         Self {
             pipe: pipe.map(File::from),
             file,
-            info: StreamInfo {
-                retained_bytes: 0,
-                observed_bytes: 0,
-                limit_bytes: limit,
-                eof: false,
-                retention_error: None,
-            },
+            info: empty_stream(limit),
         }
     }
 
