@@ -24,7 +24,7 @@ use crate::{RequestInfo, StreamInfo, fault};
 pub(crate) const DATABASE: &str = "core.sqlite3";
 pub(crate) const RUN_LOCK: &str = "run.lock";
 const STORE_LOCK: &str = "store.lock";
-const FORMAT: i64 = 1;
+const FORMAT: i64 = 2;
 const LOCK_PATIENCE: Duration = Duration::from_millis(500);
 pub(crate) const BLOB_CHUNK: usize = 64 * 1024;
 
@@ -377,10 +377,10 @@ impl OperationStore {
             },
             revision,
         };
-        if let Some(
-            ExecutionFact::SpawnObserved { pid, .. } | ExecutionFact::ExitObserved { pid, .. },
-        ) = record.execution.value()
-            && (*pid == 0 || record.dispatch.value() != Some(&DispatchFact::Attempted))
+        let attempted = record.dispatch.value().is_some_and(DispatchFact::attempted);
+        if let Some(fact) = record.execution.value()
+            && (fact.pid() == Some(0)
+                || (!matches!(fact, ExecutionFact::NotStarted { .. }) && !attempted))
         {
             return Err(StoreError::Unreadable(
                 "native execution without a valid dispatch/pid".into(),
@@ -645,8 +645,9 @@ impl OperationStore {
         let value = match fact {
             Fact::Dispatch => {
                 monotonic(&old.record.dispatch, &record.dispatch)?;
-                if old.record.dispatch.value() == Some(&DispatchFact::Attempted)
-                    && record.dispatch.value() != Some(&DispatchFact::Attempted)
+                // The recorded process context is what later pid probes rely on.
+                if let Some(a @ DispatchFact::Attempted { .. }) = old.record.dispatch.value()
+                    && record.dispatch.value() != Some(a)
                 {
                     return Err(StoreError::Unreadable(
                         "dispatch knowledge regression".into(),
@@ -672,6 +673,11 @@ impl OperationStore {
                             | ExecutionFact::ExitObserved {
                                 pid: next_pid,
                                 spawned_at: next_at,
+                                ..
+                            }
+                            | ExecutionFact::Gone {
+                                pid: Some(next_pid),
+                                spawned_at: Some(next_at),
                                 ..
                             } if pid == next_pid && spawned_at == next_at => {}
                             _ => {

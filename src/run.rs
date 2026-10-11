@@ -99,13 +99,27 @@ pub enum RunStatus {
         present: bool,
         observed_at: SystemTime,
     },
+    /// No Core held the run when its main process ended (with `pid: None`,
+    /// possibly before it started); `observed_at` is when the absence was
+    /// observed, not when it ended. The exit status is unknown. `group_released`
+    /// is true once its process group was also observed to be empty.
+    Gone {
+        pid: Option<u32>,
+        spawned_at: Option<SystemTime>,
+        evidence: AbsenceEvidence,
+        observed_at: SystemTime,
+        group_released: bool,
+    },
 }
 
 impl RunStatus {
     /// The selected native execution has a known end. RunView also checks the
     /// current holder; retention separately requires known resource release.
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::NotStarted { .. } | Self::Finished { .. })
+        matches!(
+            self,
+            Self::NotStarted { .. } | Self::Finished { .. } | Self::Gone { .. }
+        )
     }
 }
 
@@ -243,7 +257,11 @@ impl RunShared {
         }
         if !held
             && !state.record.removable()
-            && state.record.dispatch.value() == Some(&DispatchFact::Attempted)
+            && state
+                .record
+                .dispatch
+                .value()
+                .is_some_and(DispatchFact::attempted)
         {
             if !state.record.outputs.stdout.info.eof
                 && state.record.outputs.stdout.info.retention_error.is_none()
@@ -302,6 +320,22 @@ impl RunShared {
                 spawned_at: *spawned_at,
                 exit: exit.clone(),
                 exit_observed_at: *observed_at,
+                group_released: state.record.group_released.value() == Some(&true),
+            },
+            Knowledge::Known {
+                value:
+                    ExecutionFact::Gone {
+                        pid,
+                        spawned_at,
+                        evidence,
+                    },
+                observed_at,
+                ..
+            } => RunStatus::Gone {
+                pid: *pid,
+                spawned_at: *spawned_at,
+                evidence: evidence.clone(),
+                observed_at: *observed_at,
                 group_released: state.record.group_released.value() == Some(&true),
             },
             Knowledge::Known {
@@ -516,13 +550,19 @@ impl RunShared {
             });
         }
         self.flush(state);
-        if !state.held
-            && matches!(
-                state.record.execution.value(),
-                None | Some(ExecutionFact::SpawnObserved { .. })
-            )
-            && state.record.dispatch.value() == Some(&DispatchFact::Attempted)
+        if state.held
+            || !state
+                .record
+                .dispatch
+                .value()
+                .is_some_and(DispatchFact::attempted)
         {
+            return Ok(());
+        }
+        if matches!(
+            state.record.execution.value(),
+            None | Some(ExecutionFact::SpawnObserved { .. })
+        ) {
             state.record.run_lock = match probe(&self.dir) {
                 Ok(present) => Knowledge::known(present, FactSource::RunLock),
                 Err(error) => Knowledge::unknown(
@@ -531,7 +571,86 @@ impl RunShared {
                 ),
             };
         }
+        self.observe_absence(state);
         Ok(())
+    }
+
+    /// For a dispatched run no Core holds, records only what the OS shows to be
+    /// gone: the main process, its process group, or the whole boot session.
+    /// Pids are compared only within the dispatch's boot session and pid
+    /// namespace; nothing is signalled and no exit status is inferred.
+    fn observe_absence(&self, state: &mut State) {
+        if state.record.removable() {
+            return;
+        }
+        let Some(DispatchFact::Attempted {
+            context: Some(dispatched),
+        }) = state.record.dispatch.value()
+        else {
+            return;
+        };
+        let Ok(current) = os::process_context() else {
+            return;
+        };
+        let execution = state.record.execution.value();
+        let released = state.record.group_released.value() == Some(&true);
+        let mut gone = None;
+        let mut release = None;
+        if dispatched.boot_id != current.boot_id {
+            if !execution.is_some_and(|fact| fact.rank() == 2) {
+                let (pid, spawned_at) = match execution {
+                    Some(ExecutionFact::SpawnObserved { pid, spawned_at }) => {
+                        (Some(*pid), Some(*spawned_at))
+                    }
+                    _ => (None, None),
+                };
+                let evidence = AbsenceEvidence::BootChanged {
+                    dispatched: dispatched.boot_id.clone(),
+                    current: current.boot_id,
+                };
+                gone = Some((pid, spawned_at, evidence, FactSource::BootSession));
+            }
+            if !released {
+                release = Some(FactSource::BootSession);
+            }
+        } else if dispatched.pid_namespace == current.pid_namespace {
+            if let Some(ExecutionFact::SpawnObserved { pid, spawned_at }) = execution
+                && os::absent(*pid as i32)
+            {
+                let evidence = AbsenceEvidence::MainPidAbsent;
+                gone = Some((
+                    Some(*pid),
+                    Some(*spawned_at),
+                    evidence,
+                    FactSource::ProcessTable,
+                ));
+            }
+            // The group id is the main pid; it is not reused while any member remains.
+            if !released
+                && let Some(pgid) = execution.and_then(ExecutionFact::pid)
+                && os::absent(-(pgid as i32))
+            {
+                release = Some(FactSource::ProcessTable);
+            }
+        }
+        if let Some((pid, spawned_at, evidence, source)) = gone {
+            state.record.execution = Knowledge::known(
+                ExecutionFact::Gone {
+                    pid,
+                    spawned_at,
+                    evidence,
+                },
+                source,
+            );
+            mark(state, Fact::Execution);
+        }
+        if let Some(source) = release {
+            state.record.group_released = Knowledge::known(true, source);
+            mark(state, Fact::Release);
+        }
+        if !state.pending.is_empty() {
+            self.flush(state);
+        }
     }
 
     fn flush(&self, state: &mut State) {
@@ -550,7 +669,9 @@ impl RunShared {
 
     fn begin_dispatch(&self) -> Result<(), String> {
         let mut state = lock(&self.state);
-        state.record.dispatch = Knowledge::known(DispatchFact::Attempted, FactSource::Core);
+        let context = os::process_context().ok();
+        state.record.dispatch =
+            Knowledge::known(DispatchFact::Attempted { context }, FactSource::Core);
         // A failure here never calls the executor, even if the commit's reply
         // was lost. A later submit reads the acceptance and never replays it.
         mark(&mut state, Fact::Dispatch);

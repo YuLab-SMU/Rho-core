@@ -3,10 +3,14 @@
 //! Only the holder thread of a run signals or reaps its process, and it never
 //! signals after reaping. Until the main process is reaped its pid, and with it
 //! the process group id, cannot be reused, so group signals reach this run only.
+//! Runs no Core holds are only probed with signal 0, never signalled.
 
 use std::io;
 use std::os::fd::RawFd;
+use std::sync::OnceLock;
 use std::time::Duration;
+
+use crate::record::ProcessContext;
 
 /// Reports whether `pid` has exited, leaving it unreaped (`WNOWAIT`).
 pub(crate) fn has_exited(pid: i32) -> io::Result<bool> {
@@ -49,6 +53,80 @@ pub(crate) fn group_exists(pgid: i32) -> bool {
         Ok(()) => true,
         Err(error) => error.raw_os_error() == Some(libc::EPERM),
     }
+}
+
+/// Whether `kill(target, 0)` reports that no such process (`target > 0`) or
+/// process group (`target < 0`) exists. Any other answer is not absence.
+pub(crate) fn absent(target: i32) -> bool {
+    // SAFETY: kill with signal 0 only checks existence and permission.
+    let result = unsafe { libc::kill(target, 0) };
+    result != 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+/// This process's boot session and pid namespace, read once.
+pub(crate) fn process_context() -> Result<ProcessContext, String> {
+    static CONTEXT: OnceLock<Result<ProcessContext, String>> = OnceLock::new();
+    CONTEXT
+        .get_or_init(|| {
+            Ok(ProcessContext {
+                boot_id: boot_id().map_err(|e| format!("boot session: {e}"))?,
+                pid_namespace: pid_namespace().map_err(|e| format!("pid namespace: {e}"))?,
+            })
+        })
+        .clone()
+}
+
+#[cfg(target_os = "macos")]
+fn boot_id() -> io::Result<String> {
+    let mut buffer = [0u8; 128];
+    let mut length = buffer.len();
+    // SAFETY: a NUL-terminated name and a buffer whose size is passed in `length`.
+    let result = unsafe {
+        libc::sysctlbyname(
+            c"kern.bootsessionuuid".as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            &mut length,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let bytes = &buffer[..length.min(buffer.len())];
+    let text = bytes.split(|&b| b == 0).next().unwrap_or_default();
+    nonempty(String::from_utf8_lossy(text).into_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn boot_id() -> io::Result<String> {
+    nonempty(std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn boot_id() -> io::Result<String> {
+    Err(io::Error::other(
+        "no boot session identity on this platform",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn pid_namespace() -> io::Result<Option<String>> {
+    let link = std::fs::read_link("/proc/self/ns/pid")?;
+    nonempty(link.to_string_lossy().into_owned()).map(Some)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pid_namespace() -> io::Result<Option<String>> {
+    Ok(None)
+}
+
+fn nonempty(text: String) -> io::Result<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(io::Error::other("empty identity"));
+    }
+    Ok(text.to_owned())
 }
 
 /// Blocks until `pid` exits and reaps it, returning the raw wait status.

@@ -14,8 +14,9 @@ use std::thread;
 use std::time::Duration;
 
 use rho_core::{
-    Core, CoreConfig, Disposition, Executor, ForgetError, LookupError, RunRequest, RunStatus,
-    Stream, SubmitError,
+    AbsenceEvidence, Core, CoreConfig, DispatchFact, Disposition, ExecutionFact, Executor,
+    FactSource, ForgetError, Knowledge, LookupError, ProcessContext, RetentionState, RunRequest,
+    RunStatus, Stream, SubmitError,
 };
 
 const CALLER: &str = "agent-a";
@@ -390,12 +391,301 @@ fn host_killed_while_holding_a_run_leaves_it_detached_not_rerun() {
 
     ex.paths.open_gate();
     let core = reopen(&ex.paths);
-    let view = wait_lock_absent(&core);
+    let view = core.wait(CALLER, ID, PATIENCE).unwrap();
+    // Only the absence of its pid is known; no exit status is claimed.
     assert!(
-        !view.is_terminal(),
-        "exit remains unknown: {:?}",
+        matches!(
+            view.status,
+            RunStatus::Gone {
+                pid: Some(gone),
+                evidence: AbsenceEvidence::MainPidAbsent,
+                ..
+            } if gone == pid
+        ),
+        "{:?}",
         view.status
     );
+    assert_eq!(ex.paths.dispatches(), 1);
+}
+
+/// Waits until no process has `pid`, as `kill -0` from a shell would see it.
+fn wait_pid_absent(pid: i32) {
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while unsafe { libc::kill(pid, 0) } == 0
+        || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "process {pid} never ended"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_detached_run_that_ended_can_be_forgotten_to_recover_capacity() {
+    let ex = experiment();
+    let host = start_host(&ex.paths, None);
+    ex.paths.wait_started();
+    kill(&host, &ex.paths);
+    reap_killed(host);
+
+    let mut config = ex.paths.config();
+    config.limits.max_records = 1;
+    let core = Core::open(config.clone()).unwrap();
+    let pid = saved_pid(&core);
+    let mut other = ex.paths.request();
+    other.request_id = "other".into();
+    other.code = "exit 0\n".into();
+    other.args.clear();
+    assert!(matches!(
+        core.submit(CALLER, other.clone()),
+        Err(SubmitError::Capacity { .. })
+    ));
+    assert!(matches!(
+        core.forget(CALLER, ID),
+        Err(ForgetError::NotTerminal(_))
+    ));
+
+    // The task ends with no Core holding it; a native probe sees it gone.
+    ex.paths.open_gate();
+    wait_pid_absent(pid as i32);
+    let view = core.wait(CALLER, ID, PATIENCE).unwrap();
+    assert!(view.is_terminal(), "{:?}", view.status);
+    assert!(
+        matches!(
+            view.status,
+            RunStatus::Gone {
+                pid: Some(gone),
+                evidence: AbsenceEvidence::MainPidAbsent,
+                group_released: true,
+                ..
+            } if gone == pid
+        ),
+        "{:?}",
+        view.status
+    );
+    assert!(matches!(
+        view.operation.execution,
+        Knowledge::Known {
+            source: FactSource::ProcessTable,
+            ..
+        }
+    ));
+    assert_eq!(view.operation.retention, RetentionState::Removable);
+    assert_eq!(view.unsaved, None);
+    duplicates_find_the_original(&core, &ex.paths);
+    drop(core);
+
+    // The observation was saved: the next instance reads the same facts.
+    let core = Core::open(config).unwrap();
+    assert_eq!(
+        core.lookup(CALLER, ID).unwrap().operation.execution,
+        view.operation.execution
+    );
+    core.forget(CALLER, ID).unwrap();
+    assert_eq!(ex.paths.dispatches(), 1);
+    assert_eq!(
+        core.submit(CALLER, other).unwrap().disposition,
+        Disposition::Accepted
+    );
+    assert!(core.wait(CALLER, "other", PATIENCE).unwrap().is_terminal());
+}
+
+fn saved_pid(core: &Core) -> u32 {
+    let view = core.lookup(CALLER, ID).unwrap();
+    let Some(ExecutionFact::SpawnObserved { pid, .. }) = view.operation.execution.value() else {
+        panic!("the dead host saved the spawn: {:?}", view.status);
+    };
+    *pid
+}
+
+/// Rewrites the stored dispatch context, standing in for a run dispatched in
+/// an earlier boot, another pid namespace or with an unreadable context.
+fn edit_dispatch_context(paths: &Paths, edit: impl FnOnce(&mut Option<ProcessContext>)) {
+    let db = rusqlite::Connection::open(paths.state.join("core.sqlite3")).unwrap();
+    let text: String = db
+        .query_row("SELECT dispatch FROM operations", [], |row| row.get(0))
+        .unwrap();
+    let mut dispatch: Knowledge<DispatchFact> = serde_json::from_str(&text).unwrap();
+    let Knowledge::Known {
+        value: DispatchFact::Attempted { context },
+        ..
+    } = &mut dispatch
+    else {
+        panic!("dispatch was not attempted: {text}");
+    };
+    edit(context);
+    let text = serde_json::to_string(&dispatch).unwrap();
+    db.execute("UPDATE operations SET dispatch=?1", [text])
+        .unwrap();
+}
+
+#[test]
+fn a_run_from_an_earlier_boot_is_known_gone_even_without_a_pid() {
+    let ex = experiment();
+    reap_killed(start_host(&ex.paths, Some("dispatched")));
+    // Injected store fact: the dispatch is recorded under another boot session.
+    // Nothing was spawned, so no process of this run exists in the current one.
+    let mut current = String::new();
+    edit_dispatch_context(&ex.paths, |context| {
+        let context = context.as_mut().expect("context was readable");
+        current = std::mem::replace(&mut context.boot_id, "earlier-boot".into());
+    });
+
+    let core = reopen(&ex.paths);
+    let view = core.lookup(CALLER, ID).unwrap();
+    let RunStatus::Gone {
+        pid: None,
+        spawned_at: None,
+        evidence:
+            AbsenceEvidence::BootChanged {
+                dispatched,
+                current: now,
+            },
+        group_released: true,
+        ..
+    } = &view.status
+    else {
+        panic!("expected a run gone with its boot, got {:?}", view.status);
+    };
+    assert_eq!((dispatched.as_str(), now), ("earlier-boot", &current));
+    assert!(matches!(
+        view.operation.group_released,
+        Knowledge::Known {
+            source: FactSource::BootSession,
+            ..
+        }
+    ));
+    duplicates_find_the_original(&core, &ex.paths);
+    core.forget(CALLER, ID).unwrap();
+    assert_eq!(ex.paths.dispatches(), 0);
+}
+
+#[test]
+fn pids_prove_nothing_without_the_dispatch_process_context() {
+    let ex = experiment();
+    let host = start_host(&ex.paths, None);
+    ex.paths.wait_started();
+    kill(&host, &ex.paths);
+    reap_killed(host);
+    let mut recorded = None;
+    edit_dispatch_context(&ex.paths, |context| recorded = context.take());
+    let recorded = recorded.expect("context was readable");
+    ex.paths.open_gate();
+    let pid: i32 = fs::read_to_string(ex.paths.work.join("dispatches.log"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    wait_pid_absent(pid);
+
+    let undecided = |paths: &Paths| {
+        let core = reopen(paths);
+        let view = core.lookup(CALLER, ID).unwrap();
+        assert!(
+            matches!(view.status, RunStatus::Detached { pid: Some(_), .. }),
+            "{:?}",
+            view.status
+        );
+        assert_ne!(view.operation.group_released.value(), Some(&true));
+        assert!(matches!(
+            core.forget(CALLER, ID),
+            Err(ForgetError::NotTerminal(_))
+        ));
+    };
+    // An unreadable context at dispatch.
+    undecided(&ex.paths);
+    // Same boot, another pid namespace: a free pid here says nothing there.
+    let mut elsewhere = recorded.clone();
+    elsewhere.pid_namespace = Some(match &recorded.pid_namespace {
+        Some(namespace) => format!("{namespace}-elsewhere"),
+        None => "pid:[elsewhere]".into(),
+    });
+    edit_dispatch_context(&ex.paths, |context| *context = Some(elsewhere));
+    undecided(&ex.paths);
+
+    edit_dispatch_context(&ex.paths, |context| *context = Some(recorded));
+    let core = reopen(&ex.paths);
+    assert!(matches!(
+        core.lookup(CALLER, ID).unwrap().status,
+        RunStatus::Gone {
+            evidence: AbsenceEvidence::MainPidAbsent,
+            group_released: true,
+            ..
+        }
+    ));
+    core.forget(CALLER, ID).unwrap();
+    assert_eq!(ex.paths.dispatches(), 1);
+}
+
+#[test]
+fn a_group_member_that_outlives_the_main_process_keeps_the_record() {
+    let ex = experiment();
+    let member_gate = ex.paths.work.join("member.gate");
+    let c_path = CString::new(member_gate.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    // The member does not hold the run lock or the output pipes.
+    fs::write(
+        ex.paths.root.join("task.code"),
+        "echo \"$$\" >> dispatches.log\n\
+         (read line < member.gate; echo member > member.txt) </dev/null >/dev/null 2>&1 &\n\
+         echo started > \"$1\"\n\
+         read line < \"$2\"\n",
+    )
+    .unwrap();
+    let host = start_host(&ex.paths, None);
+    ex.paths.wait_started();
+    kill(&host, &ex.paths);
+    reap_killed(host);
+    let core = reopen(&ex.paths);
+    let pid = saved_pid(&core);
+
+    ex.paths.open_gate();
+    wait_pid_absent(pid as i32);
+    let view = core.wait(CALLER, ID, PATIENCE).unwrap();
+    assert!(
+        matches!(
+            view.status,
+            RunStatus::Gone {
+                evidence: AbsenceEvidence::MainPidAbsent,
+                group_released: false,
+                ..
+            }
+        ),
+        "{:?}",
+        view.status
+    );
+    assert!(matches!(
+        view.operation.retention,
+        RetentionState::Protected { .. }
+    ));
+    assert!(matches!(
+        core.forget(CALLER, ID),
+        Err(ForgetError::NotTerminal(_))
+    ));
+    duplicates_find_the_original(&core, &ex.paths);
+
+    within("member release", move || {
+        fs::write(member_gate, "go\n").unwrap()
+    });
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while core
+        .lookup(CALLER, ID)
+        .unwrap()
+        .operation
+        .group_released
+        .value()
+        != Some(&true)
+    {
+        assert!(std::time::Instant::now() < deadline, "group never released");
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        fs::read_to_string(ex.paths.work.join("member.txt")).unwrap(),
+        "member\n"
+    );
+    core.forget(CALLER, ID).unwrap();
     assert_eq!(ex.paths.dispatches(), 1);
 }
 
@@ -413,6 +703,7 @@ fn closing_inherited_stdin_does_not_confirm_exit_after_host_crash() {
     reap_killed(host);
     let core = reopen(&ex.paths);
     let view = core.lookup(CALLER, ID).unwrap();
+    let forget = core.forget(CALLER, ID);
     let pid: i32 = fs::read_to_string(ex.paths.work.join("dispatches.log"))
         .unwrap()
         .trim()
@@ -422,15 +713,27 @@ fn closing_inherited_stdin_does_not_confirm_exit_after_host_crash() {
     // Release the fixture before asserting, including on the former implementation.
     ex.paths.open_gate();
     assert!(alive, "the native task is still alive");
+    assert_eq!(view.operation.run_lock.value(), Some(&false));
     assert!(
         !view.is_terminal(),
         "closing stdin is not evidence of native exit: {:?}",
         view.status
     );
-    assert!(matches!(
-        core.forget(CALLER, ID),
-        Err(ForgetError::NotTerminal(_))
-    ));
+    assert!(matches!(forget, Err(ForgetError::NotTerminal(_))));
+    // The end of the process, not of its lock, is what is observed.
+    wait_pid_absent(pid);
+    let view = core.wait(CALLER, ID, PATIENCE).unwrap();
+    assert!(
+        matches!(
+            view.status,
+            RunStatus::Gone {
+                evidence: AbsenceEvidence::MainPidAbsent,
+                ..
+            }
+        ),
+        "{:?}",
+        view.status
+    );
 }
 
 #[test]
@@ -443,13 +746,14 @@ fn crash_after_exit_before_the_outcome_is_saved_keeps_retained_output() {
 
     let core = reopen(&ex.paths);
     let view = core.lookup(CALLER, ID).unwrap();
-    // The exit status was observed only by the dead host, so it is not claimed.
+    // The exit status was observed only by the dead host, so it is not
+    // claimed; the reaped pid is observed absent.
     assert!(
         matches!(
             view.status,
-            RunStatus::Detached {
+            RunStatus::Gone {
                 pid: Some(_),
-                present: false,
+                evidence: AbsenceEvidence::MainPidAbsent,
                 ..
             }
         ),
@@ -601,7 +905,15 @@ fn a_saved_cancel_survives_a_crash_but_is_not_reported_as_a_stop() {
         view.status
     );
     ex.paths.open_gate();
-    assert!(!wait_lock_absent(&core).is_terminal());
+    let view = core.wait(CALLER, ID, PATIENCE).unwrap();
+    // Its end is observed, but not as the effect of a stop signal.
+    assert!(
+        matches!(view.status, RunStatus::Gone { .. }),
+        "{:?}",
+        view.status
+    );
+    let cancel = view.cancel.as_ref().unwrap();
+    assert!(cancel.term_sent_at.is_none() && cancel.kill_sent_at.is_none());
     assert_eq!(ex.paths.dispatches(), 1);
 }
 
@@ -649,12 +961,20 @@ fn output_observations_and_truncation_survive_a_crash_before_exit() {
         b"1234567890"
     );
     duplicates_find_the_original(&core, &ex.paths);
-    ex.paths.open_gate();
-    assert!(!wait_lock_absent(&core).is_terminal());
     assert!(matches!(
         core.forget(CALLER, ID),
         Err(ForgetError::NotTerminal(_))
     ));
+    ex.paths.open_gate();
+    let view = core.wait(CALLER, ID, PATIENCE).unwrap();
+    assert!(
+        matches!(view.status, RunStatus::Gone { .. }),
+        "{:?}",
+        view.status
+    );
+    // Later output was not retained; the end does not claim it was.
+    assert_eq!(view.stdout.retained_bytes, 10);
+    assert!(view.stdout.retention_error.is_some() && !view.stdout.eof);
 }
 
 #[test]
@@ -680,7 +1000,13 @@ fn an_interrupted_output_transaction_never_publishes_uncommitted_blob_bytes() {
     );
     duplicates_find_the_original(&core, &ex.paths);
     ex.paths.open_gate();
-    assert!(!wait_lock_absent(&core).is_terminal());
+    let view = core.wait(CALLER, ID, PATIENCE).unwrap();
+    assert!(
+        matches!(view.status, RunStatus::Gone { .. }),
+        "{:?}",
+        view.status
+    );
+    assert_eq!(view.stdout.retained_bytes, 0);
 }
 
 #[test]
@@ -699,13 +1025,14 @@ fn saved_exit_is_not_downgraded_when_release_was_not_saved() {
             ..
         })
     ));
+    // The unsaved release is observed again from the empty process group.
     assert!(matches!(
         view.operation.group_released,
-        rho_core::Knowledge::Unknown { .. }
-    ));
-    assert!(matches!(
-        core.forget(CALLER, ID),
-        Err(ForgetError::NotTerminal(_))
+        Knowledge::Known {
+            value: true,
+            source: FactSource::ProcessTable,
+            ..
+        }
     ));
     let config = ex.paths.config();
     drop(core);
@@ -715,6 +1042,7 @@ fn saved_exit_is_not_downgraded_when_release_was_not_saved() {
         view.operation.execution
     );
     duplicates_find_the_original(&core, &ex.paths);
+    core.forget(CALLER, ID).unwrap();
 }
 
 #[test]

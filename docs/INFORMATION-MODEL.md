@@ -23,15 +23,16 @@ SQLite 对 `(scope_id, caller_id, request_id)` 加唯一约束；代码、目录
 
 `RunView.operation` 返回 `OperationRecord`。`Knowledge<T>` 为
 `Known { value, observed_at, source }` 或 `Unknown { reason, since }`。
-时间是 Core 的观察时间，来源为 Core、原生进程、存储恢复或运行锁。各维度不能相互替代。
+时间是 Core 的观察时间，来源为 Core、原生进程、存储恢复、运行锁、进程表（信号 0 的 ESRCH）
+或启动会话。各维度不能相互替代。
 
 | 维度 | 可确认的内容 | 不可推导的内容 |
 | --- | --- | --- |
-| Dispatch | 初始 `NotAttempted`；调用执行方之前持久写入 `Attempted` | `Attempted` 不保证启动成功或原生效果 |
-| Execution | 明确 `NotStarted`、`SpawnObserved`、`ExitObserved`；保留已知 PID、启动观测与退出结果 | 历史启动观测不是当前存活，失去持有不抹掉它；退出码未知不表示未执行 |
+| Dispatch | 初始 `NotAttempted`；调用执行方之前持久写入 `Attempted`，附当时的启动会话与 pid 命名空间（读不到为 `None`） | `Attempted` 不保证启动成功或原生效果；没有上下文时进程号不作证据 |
+| Execution | 明确 `NotStarted`、`SpawnObserved`、`ExitObserved`；未持有时同一上下文内主进程号不存在或启动会话已变化记为 `Gone`；保留已知 PID、启动观测与退出结果 | 历史启动观测不是当前存活，失去持有不抹掉它；退出码未知不表示未执行；`Gone` 不含退出码 |
 | Cancellation | 请求原因/时间、系统调用成功的 TERM/KILL 时间与发送错误 | 请求或发信号不等于退出、组释放或回滚 |
 | Outputs | 每路的保留/观察字节、限制、EOF、错误、观测来源与时间、不可变片段引用 | 文件存在不等于元数据已提交；输出失败不改变原生退出 |
-| Group release | 在实际持有边界观察到是否还有组成员 | 退出码、运行锁状态均不能代替组释放确认 |
+| Group release | 在实际持有边界观察到是否还有组成员；未持有时同一上下文内组号不存在或启动会话已变化 | 退出码、主进程不存在、运行锁状态均不能代替组释放确认 |
 | Run lock | 当前观察到原锁是否被持有，或明确观察错误；不会保存成原生退出 | 任务可关闭 stdin；锁释放不证明结束，也不授权删除 |
 | Retention | 依据已知完成/释放、当前持有与未保存事实，投影 Protected 或 Removable | 单个便利状态 `Finished` 不足以删除；不自动过期或淘汰 |
 | Revision | 已提交事实的版本；每个写入比较当前版本并递增 | 未提交内存观察不冒充持久版本；陈旧更新拒绝 |
@@ -65,13 +66,15 @@ SQLite 配置为 WAL、FULL 同步，并启用 macOS 的 fullfsync。当前锁�
 ## 单调更新与可验证行为
 
 已知观察不得退为 Unknown 或更早观察。已观察退出不得退回启动，终结事实不得改变原生身份；
+启动观测只能以同一 PID 与启动时刻进入退出或 `Gone`，派发标记中的上下文不得改变；
 已有输出偏移、已保留片段、观察计数和 EOF 不得回退。信号成功时间与原取消意图不能删除或替换。
 乐观版本检查拒绝旧写入，独立维度仍可分别保存。
 
 可重试的只是保存同一已知事实，不是执行原任务。没有持久派发尝试时，重启可以确认没有
-调用执行方；有派发尝试但没有结束观测时保留未知。当前没有基于租约到期的夺回或自动派发。
+调用执行方；有派发尝试但没有结束观测时保留未知，直到在派发时的上下文中观察到主进程与
+进程组不存在，或启动会话已变化。当前没有基于租约到期的夺回或自动派发。
 
 验收使用实际 `/bin/sh` 原生效果、输出字节、并发重复送达、宿主 SIGKILL、SQLite FULL/只读
-错误与定向事务失败。回归入口为 [managed_run](../tests/managed_run.rs)、
+错误与定向事务失败；启动会话变化与 pid 命名空间不同由注入的存储事实模拟。回归入口为 [managed_run](../tests/managed_run.rs)、
 [restart](../tests/restart.rs)、[storage](../tests/storage.rs) 与存储单元检查。
 实际平台、失败依据和未验证范围见 [Progress](PROGRESS.md)，不将 SQLite 配置替代故障实验。
