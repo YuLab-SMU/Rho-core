@@ -30,7 +30,9 @@ Rho Core 为 Agent 工作环境补足需要管理的本地执行：定位选定�
 | [重建与分支规则](docs/REBUILD.md) | 归档、主分支开发、独立验收与后续集成 |
 | [工作约束](AGENTS.md) | 后续实施时遵循的规则 |
 
-本轮只修改 Rho-core。[Rho 应用](https://github.com/YuLab-SMU/Rho) 和
+Core 从零重建与此前四方向任务只修改 Rho-core。当前另行选定的[真实 R 领域试用](docs/work/CORE-20261011-05.md)由 Rho-plugins 的消费者通过现有 CLI 验收，应用与插件仅记录后续重建边界；这不改变 Core 契约或旧组件组合。
+
+此前单仓范围：[Rho 应用](https://github.com/YuLab-SMU/Rho) 和
 [Rho-plugins](https://github.com/YuLab-SMU/Rho-plugins) 保持原状，它们当前的 SDK、
 插件协议与组合选择不代表新 Core 的契约。协议接入层在 Core 的逻辑边界之外，
 可以同仓同进程存在；不因此创建新仓库或要求全部外部工具编写 Rho 插件。
