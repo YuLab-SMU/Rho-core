@@ -36,7 +36,10 @@ project root, which is a containment check rather than isolation. Each run gets
 its own process group, held and signaled only by Core until it is reaped. A
 process that leaves that group is outside Core's hold. Bounded resources reject
 new work explicitly. The caller name is a namespace in a trusted single-user
-setting, not authentication. The library opens no network listener.
+setting, not authentication. The library opens no network listener. The
+`rho-core serve` host listens only on a mode-0600 Unix socket in its state
+directory and refuses peers whose uid differs from its own; any process of that
+user may still use any caller name. See [Host and CLI](docs/HOST-CLI.md).
 
 Remote sharing, multi-user policies and stronger isolation need concrete
 requirements and verification, rather than a general security framework or a

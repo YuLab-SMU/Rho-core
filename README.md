@@ -8,13 +8,15 @@ Rho Core 为 Agent 工作环境补足需要管理的本地执行：定位选定�
 本仓库已选择从零重建。`main` 包含设计与开发规则，以及首个受管流程的 Rust 库
 `rho-core`：仅支持 Unix；受理与独立执行事实使用 SQLite 事务持久保存，脚本和输出为内容寻址文件，
 重启后可按调用方列出原操作且不重派发（阶段 2 review 修复），前一实例留下的运行经进程表或启动会话
-确认已不在后可删除；尚无公共 SDK 或协议接入。原实现、原测试和原设计完整保存在分支
+确认已不在后可删除。`rho-core` 二进制提供本地常驻宿主与命令行客户端，让 Agent 的多次独立 shell 调用
+使用同一组受管运行；尚无公共 SDK、网络或 MCP 接入。原实现、原测试和原设计完整保存在分支
 `codex/legacy-core-before-rebuild`。新源码在 `main` 分阶段建立，设计文档继续留在 `main`。
 
 | 入口 | 内容 |
 | --- | --- |
 | [信息模型与存储不变量](docs/INFORMATION-MODEL.md) | 请求键、操作身份、独立事实、事务边界、单调更新与删除保护 |
 | [受管运行契约](docs/MANAGED-RUN.md) | 调用方法、身份与去重、持有与停止、限额、存储与重启、不提供的保证 |
+| [本地宿主与 CLI](docs/HOST-CLI.md) | Agent 跨调用提交、等待、读输出与取消；退出码、宿主限额与故障语义 |
 | [Claude Code 行为评估](evals/claude-code/README.md) | 指定 Magpie/WestlakeHPC 模型使用 Core 的独立评估；真实夹具、事实评分与重复试验 |
 | [使命与实施计划](docs/MISSION-AND-PLAN.md) | Agent 工作方式、受管价值、按需里程碑与验收 |
 | [目标架构](docs/ARCHITECTURE.md) | 核心职责的做什么、为什么、如何做到；依赖方向与执行保证 |
@@ -38,7 +40,7 @@ Rho Core 为 Agent 工作环境补足需要管理的本地执行：定位选定�
 [`examples/managed_run.rs`](examples/managed_run.rs)，行为回归见
 [`tests/managed_run.rs`](tests/managed_run.rs)，故障实验见
 [`tests/restart.rs`](tests/restart.rs)，存储失败与事实独立性见
-[`tests/storage.rs`](tests/storage.rs)；各平台的实际验证范围见
+[`tests/storage.rs`](tests/storage.rs)，宿主与 CLI 的跨进程回归见 [`tests/host.rs`](tests/host.rs)；各平台的实际验证范围见
 [进度总览](docs/PROGRESS.md)。后续流程仍先复用实际工具确认缺口，不以重新建设文件
 读取、统一工具目录或协议框架为起点。模型、协议和领域集成各自在真实消费者出现后
 验证；没有观测服务。
@@ -57,6 +59,8 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo run --locked --example managed_run
 ```
+
+`cargo test` 同时构建并检查 `rho-core` 二进制；`cargo run --locked --bin rho-core -- help` 打印其用法。
 
 按用户决定（2026-10-10）暂不配置 CI，也不做多平台 CI；提交前在本地依次运行以上
 命令，实际验证过的平台见 [进度总览](docs/PROGRESS.md)。

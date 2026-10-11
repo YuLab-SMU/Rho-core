@@ -152,6 +152,8 @@ let chunk = core.read_output("agent-a", "sum-100", Stream::Stdout, 0, 64 * 1024)
   发 SIGKILL。返回值只说明请求已提出，保存失败在 `unsaved` 中报告；信号系统调用成功才填
   `term_sent_at` / `kill_sent_at`，失败在 `signal_error` 中报告。停止以真实执行观测确认，
   释放以 `operation.group_released` 的已知值确认。对已结束的运行取消不产生变化。取消不回滚任务已写入的文件或其他效果。
+  运行继承启动它的线程的信号屏蔽字与被忽略的信号（Rust 标准库的行为）：嵌入 Core 的程序若屏蔽或忽略
+  SIGTERM，取消要到 SIGKILL 才生效。[本地宿主](HOST-CLI.md)因此不改屏蔽字。
 - **关闭**：`shutdown()` 拒绝新身份（已有身份仍可找回），对未结束运行按上述方式请求停止，
   最多等待 `stop_grace + output_close_grace + 1s`，报告已确认停止与未确认的运行。
   `Core` 被 drop 时执行同样的关闭，记录保留。未持有的运行不发信号、不等待，取消也不记录：本实例无法对它采取动作。
