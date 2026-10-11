@@ -737,11 +737,12 @@ echo "main done""#;
 
 #[test]
 fn a_known_start_failure_is_recorded_and_never_retried() {
-    let tmp = tempfile::tempdir().unwrap();
-    let program = fs::canonicalize(tmp.path()).unwrap().join("not-executable");
-    fs::write(&program, "#!/bin/sh\n").unwrap();
-    fs::set_permissions(&program, fs::Permissions::from_mode(0o644)).unwrap();
-    let fx = fixture_with(Limits::default(), Executor::new("sh", &program));
+    // An invalid host-configured argument is rejected by Command before any
+    // native spawn; caller-provided request arguments remain valid.
+    let fx = fixture_with(
+        Limits::default(),
+        Executor::new("sh", "/bin/sh").with_args(["\0"]),
+    );
 
     let first = fx
         .core

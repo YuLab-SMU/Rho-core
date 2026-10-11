@@ -24,7 +24,7 @@ use crate::{RequestInfo, StreamInfo, fault};
 pub(crate) const DATABASE: &str = "core.sqlite3";
 pub(crate) const RUN_LOCK: &str = "run.lock";
 const STORE_LOCK: &str = "store.lock";
-const FORMAT: i64 = 2;
+const FORMAT: i64 = 3;
 const LOCK_PATIENCE: Duration = Duration::from_millis(500);
 pub(crate) const BLOB_CHUNK: usize = 64 * 1024;
 

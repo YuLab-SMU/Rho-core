@@ -64,6 +64,60 @@ fn reject_update(column: &str) -> String {
 }
 
 #[test]
+fn a_store_without_boot_identity_scope_is_rejected_without_migration() {
+    let fx = Fixture::new();
+    fx.run("job");
+    let Fixture {
+        _tmp,
+        config,
+        core,
+        db,
+    } = fx;
+    assert_eq!(
+        db.query_row("SELECT format FROM store_info", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+    let dispatch: String = db
+        .query_row("SELECT dispatch FROM operations", [], |row| row.get(0))
+        .unwrap();
+    let mut old: serde_json::Value = serde_json::from_str(&dispatch).unwrap();
+    old["Known"]["value"]["Attempted"]["context"]
+        .as_object_mut()
+        .expect("dispatch context was readable")
+        .remove("boot_id_scope");
+    let old = serde_json::to_string(&old).unwrap();
+    db.execute("UPDATE operations SET dispatch=?1", [&old])
+        .unwrap();
+    db.execute("UPDATE store_info SET format=2", []).unwrap();
+    drop(core);
+
+    let error = match Core::open(config.clone()) {
+        Ok(_) => panic!("opened a format-2 store without boot identity scope"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("unsupported store format 2"));
+    let saved: String = db
+        .query_row("SELECT dispatch FROM operations", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(saved, old);
+    assert_eq!(
+        db.query_row("SELECT format FROM store_info", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        fs::read_to_string(config.project_root.join("dispatches.log"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn failed_acceptance_transaction_has_no_native_effect_and_can_be_retried() {
     let fx = Fixture::new();
     fx.trigger("CREATE TRIGGER reject_accept BEFORE INSERT ON operations BEGIN SELECT RAISE(ABORT,'fixture acceptance failure'); END;");

@@ -81,7 +81,9 @@ rho-core capability --contract                  # 打印契约全文
 回复是一行 JSON：成功为 `{"ok":true,"value":…}`，宿主报告的错误为
 `{"ok":false,"error":{"kind":…,"message":…}}`，`message` 说明是否已有效果。运行视图包含
 `request_id`、`run_id`、`terminal`、`held`、`status`、`cancel`、`stdout`/`stderr` 保留信息、
-`unsaved`、`retention`、`accepted_at` 与请求摘要；`status` 等枚举保持 Core 的类型名，
+`unsaved`、`retention`、`accepted_at` 与请求摘要；`--record` 中已保存的派发上下文包含
+`boot_id`、`boot_id_scope`（`Kernel` 或 `LocalView`）与 `pid_namespace`，来源范围规则见
+[受管运行契约](MANAGED-RUN.md#前一实例留下的运行)。`status` 等枚举保持 Core 的类型名，
 如 `{"Finished":{"exit":{"Code":0},…}}`、`{"Detached":{…}}`、`{"Gone":{…}}`。时间为 UTC
 RFC 3339、精确到毫秒。`read` 返回 `text`、`offset`、`next_offset`、`more_retained`、`lossy` 与
 流信息：末尾被截断的 UTF-8 字符留到下一次读取，其他无效字节以替换字符表示并标记 `lossy`。
@@ -143,7 +145,9 @@ RFC 3339、精确到毫秒。`read` 返回 `text`、`offset`、`next_offset`、`
 - 只监听 `state_dir` 中的 Unix 套接字，权限 0600；Core 创建 `state_dir` 时权限为 0700。
   没有网络监听、远程传输或令牌。
 - 宿主用 `getpeereid`（macOS）或 `SO_PEERCRED`（Linux）检查对端 uid，不同于宿主有效 uid 的连接收到
-  `refused` 问候。该检查未做行为测试（需要另一个用户）。
+  `refused` 问候。Linux 已用现有 `nobody` 做实际连接测试：默认 0700 目录、0600 套接字先拒绝连接；
+  只将独立夹具目录改为 0711、套接字改为 0666 后，宿主仍返回退出码 3、`refused`，
+  零受理、零派发，同 UID 后续调用正常。macOS 的跨 UID 行为未实测。
 - 调用方名称是同一用户内的命名空间，不是认证：同一用户的任何进程都可以使用任何调用方。
 - 运行以宿主用户的权限和环境执行；工作目录检查不是沙箱。见 [SECURITY](../SECURITY.md)。
 
@@ -160,5 +164,15 @@ RFC 3339、精确到毫秒。`read` 返回 `text`、`offset`、`next_offset`、`
 提交只受理与派发一次，内容不同为冲突；经宿主取消以 SIGTERM 结束且未发 SIGKILL；宿主 SIGKILL 后
 重启找回 `Detached`、重复提交为 `Existing`、任务结束后为 `Gone` 并可删除；宿主 SIGTERM 后运行停止、
 套接字删除；第二个宿主被拒且不影响第一个；超限请求在 Core、客户端与宿主三处被拒；连接占满时回答
-`busy`，宿主在回复前被杀时客户端报告 `reply_unknown`。只在 macOS 上运行；Linux 的对端 uid 读取
-只在源码中存在，未编译或运行。Agent 经此 CLI 的真实使用评估尚未运行。
+`busy`，宿主在回复前被杀时客户端报告 `reply_unknown`。这套回归已在 macOS 与 Linux 上运行，
+各平台格式、Clippy、完整 73 项 Cargo 回归与受管运行示例均通过。
+
+[`tests/linux_platform.py`](../tests/linux_platform.py) 在 OrbStack Ubuntu 25.04 另行验证了跨 UID 拒绝、
+局部启动标识变化、`LocalView` 到 `Kernel` 的来源变化，以及同内核下的 PID 命名空间变化。
+三个身份边界案例中原任务仍存活、原操作受保护，同身份提交返回原运行且派发计数不增加。
+整个 OrbStack 后端正常停止、启动后，直接读取内核标识的夹具返回原 `run_id` 与
+`Gone/BootChanged`，已释放且可删除；重复请求为 `existing`、派发计数保持 1，随后 `forget` 成功。
+普通 Ubuntu 局部标识夹具保持 `Detached/Protected`，重复请求仍为原运行，`forget` 被保护性拒绝。
+内核标识、启动时间与运行时长的实测依据见 [Linux 验证记录](work/CORE-20261011-03.md)。
+这些判断仍依赖可信本地 OS 视图，不提供新的隔离保证。断电或 OS 崩溃未验证；
+Agent 经此 CLI 的真实使用评估尚未运行。

@@ -28,11 +28,11 @@ SQLite 对 `(scope_id, caller_id, request_id)` 加唯一约束；代码、目录
 
 | 维度 | 可确认的内容 | 不可推导的内容 |
 | --- | --- | --- |
-| Dispatch | 初始 `NotAttempted`；调用执行方之前持久写入 `Attempted`，附当时的启动会话与 pid 命名空间（读不到为 `None`） | `Attempted` 不保证启动成功或原生效果；没有上下文时进程号不作证据 |
-| Execution | 明确 `NotStarted`、`SpawnObserved`、`ExitObserved`；未持有时同一上下文内主进程号不存在或启动会话已变化记为 `Gone`；保留已知 PID、启动观测与退出结果 | 历史启动观测不是当前存活，失去持有不抹掉它；退出码未知不表示未执行；`Gone` 不含退出码 |
+| Dispatch | 初始 `NotAttempted`；调用执行方之前持久写入 `Attempted`，附启动标识、来源范围 `boot_id_scope` 与 pid 命名空间（读不到为 `None`） | `Attempted` 不保证启动成功或原生效果；没有上下文时进程号不作证据 |
+| Execution | 明确 `NotStarted`、`SpawnObserved`、`ExitObserved`；未持有时相同标识、来源范围与 pid 命名空间内主进程号不存在，或两个不同的 `Kernel` 标识确认重启，记为 `Gone`；保留已知 PID、启动观测与退出结果 | 历史启动观测不是当前存活，失去持有不抹掉它；退出码未知不表示未执行；`Gone` 不含退出码 |
 | Cancellation | 请求原因/时间、系统调用成功的 TERM/KILL 时间与发送错误 | 请求或发信号不等于退出、组释放或回滚 |
 | Outputs | 每路的保留/观察字节、限制、EOF、错误、观测来源与时间、不可变片段引用 | 文件存在不等于元数据已提交；输出失败不改变原生退出 |
-| Group release | 在实际持有边界观察到是否还有组成员；未持有时同一上下文内组号不存在或启动会话已变化 | 退出码、主进程不存在、运行锁状态均不能代替组释放确认 |
+| Group release | 在实际持有边界观察到是否还有组成员；未持有时相同标识、来源范围与 pid 命名空间内组号不存在，或两个不同的 `Kernel` 标识确认重启 | 退出码、主进程不存在、运行锁状态均不能代替组释放确认 |
 | Run lock | 当前观察到原锁是否被持有，或明确观察错误；不会保存成原生退出 | 任务可关闭 stdin；锁释放不证明结束，也不授权删除 |
 | Retention | 依据已知完成/释放、当前持有与未保存事实，投影 Protected 或 Removable | 单个便利状态 `Finished` 不足以删除；不自动过期或淘汰 |
 | Revision | 已提交事实的版本；每个写入比较当前版本并递增 | 未提交内存观察不冒充持久版本；陈旧更新拒绝 |
@@ -62,6 +62,8 @@ SQLite 配置为 WAL、FULL 同步，并启用 macOS 的 fullfsync。当前锁�
 [synchronous 说明](https://www.sqlite.org/pragma.html#pragma_synchronous) 定义数据库保证；
 数据库事务不包含原生副作用，也不恢复已经丢失的原生句柄。物理断电仍需单独实验。
 开发状态可在格式变更时清除重建；只维护当前 SQLite 格式，不建立旧格式识别、保留或迁移机制。
+当前格式为 3，`ProcessContext.boot_id_scope` 是必需字段，没有推断默认值；旧格式打开时拒绝，
+不补造来源或迁移记录。
 
 ## 单调更新与可验证行为
 
@@ -72,9 +74,15 @@ SQLite 配置为 WAL、FULL 同步，并启用 macOS 的 fullfsync。当前锁�
 
 可重试的只是保存同一已知事实，不是执行原任务。没有持久派发尝试时，重启可以确认没有
 调用执行方；有派发尝试但没有结束观测时保留未知，直到在派发时的上下文中观察到主进程与
-进程组不存在，或启动会话已变化。当前没有基于租约到期的夺回或自动派发。
+进程组不存在，或两个不同的内核来源启动标识确认重启。局部标识或来源范围变化仍保留未知与删除保护。
+当前没有基于租约到期的夺回或自动派发。详细来源范围规则见[受管运行契约](MANAGED-RUN.md#前一实例留下的运行)。
 
 验收使用实际 `/bin/sh` 原生效果、输出字节、并发重复送达、宿主 SIGKILL、SQLite FULL/只读
-错误与定向事务失败；启动会话变化与 pid 命名空间不同由注入的存储事实模拟。回归入口为 [managed_run](../tests/managed_run.rs)、
-[restart](../tests/restart.rs)、[storage](../tests/storage.rs) 与存储单元检查。
+错误与定向事务失败。注入存储事实覆盖来源范围比较与删除保护；Linux 另用真实 `/proc` 视图和
+PID 命名空间切换验证仍存活任务的保护，并通过整个 OrbStack 后端正常停止、启动观察真实
+`BootChanged`。局部标识夹具仍保持未知；两类夹具的重复请求都只返回原运行、派发计数保持 1。
+macOS 与 Linux 的完整 73 项 Cargo 回归及受管运行示例均通过。回归入口为
+[managed_run](../tests/managed_run.rs)、[restart](../tests/restart.rs)、[storage](../tests/storage.rs)、
+存储单元检查与 [Linux 平台实验](../tests/linux_platform.py)；实测记录见
+[Linux 验证记录](work/CORE-20261011-03.md)。
 实际平台、失败依据和未验证范围见 [Progress](PROGRESS.md)，不将 SQLite 配置替代故障实验。

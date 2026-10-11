@@ -25,12 +25,23 @@ pub enum FactSource {
     BootSession,
 }
 
-/// Where a pid names a process: the OS boot session and, on Linux, the pid
-/// namespace. Absence of a pid only says something within the same context.
+/// Whether the boot identity comes from the kernel or a local filesystem view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BootIdScope {
+    /// A kernel boot identity; a changed value proves the previous boot ended.
+    Kernel,
+    /// A substituted file can change while processes from its old view remain.
+    LocalView,
+}
+
+/// Where a pid names a process: the observed boot identity, its scope and, on
+/// Linux, the pid namespace. Pid absence is compared only within that context.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessContext {
     /// `kern.bootsessionuuid` on macOS, `/proc/sys/kernel/random/boot_id` on Linux.
     pub boot_id: String,
+    /// Kernel on macOS; on Linux only when the opened boot-id file is on procfs.
+    pub boot_id_scope: BootIdScope,
     /// The `/proc/self/ns/pid` link on Linux; `None` where pids are not namespaced.
     pub pid_namespace: Option<String>,
 }

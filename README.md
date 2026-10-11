@@ -7,8 +7,8 @@ Rho Core 为 Agent 工作环境补足需要管理的本地执行：定位选定�
 
 本仓库已选择从零重建。`main` 包含设计与开发规则，以及首个受管流程的 Rust 库
 `rho-core`：仅支持 Unix；受理与独立执行事实使用 SQLite 事务持久保存，脚本和输出为内容寻址文件，
-重启后可按调用方列出原操作且不重派发（阶段 2 review 修复），前一实例留下的运行经进程表或启动会话
-确认已不在后可删除。`rho-core` 二进制提供本地常驻宿主与命令行客户端，让 Agent 的多次独立 shell 调用
+重启后可按调用方列出原操作且不重派发，前一实例留下的运行经同一身份上下文的进程表或两个不同的
+内核启动标识确认已不在后可删除。局部启动标识变化保留未知与删除保护。`rho-core` 二进制提供本地常驻宿主与命令行客户端，让 Agent 的多次独立 shell 调用
 使用同一组受管运行；尚无公共 SDK、网络或 MCP 接入。原实现、原测试和原设计完整保存在分支
 `codex/legacy-core-before-rebuild`。新源码在 `main` 分阶段建立，设计文档继续留在 `main`。
 
@@ -61,6 +61,31 @@ cargo run --locked --example managed_run
 ```
 
 `cargo test` 同时构建并检查 `rho-core` 二进制；`cargo run --locked --bin rho-core -- help` 打印其用法。
+
+Linux 的真实 UID、proc/PID 视图与内核重启验证另用 [`tests/linux_platform.py`](tests/linux_platform.py)。
+它以 root 监督普通 UID 的独立宿主，明确接收已构建二进制和 `/var/tmp` 下的持久夹具目录；
+使用 Python 3、`setpriv`、`unshare`、`nsenter` 与 `mount`：
+
+```sh
+sudo python3 tests/linux_platform.py uid --binary target/debug/rho-core --root /var/tmp/rho-core-platform-check
+sudo python3 tests/linux_platform.py namespace --binary target/debug/rho-core --root /var/tmp/rho-core-platform-check
+sudo python3 tests/linux_platform.py prepare-reboot --binary target/debug/rho-core --root /var/tmp/rho-core-platform-check
+# 在外部完成已授权的整个内核停止/启动，再执行：
+sudo python3 tests/linux_platform.py verify-reboot --binary target/debug/rho-core --root /var/tmp/rho-core-platform-check
+```
+
+默认宿主 UID 为 501、拒绝连接的 UID 为 65534；其他环境用 `--uid` 与 `--other-uid` 指定现有用户。
+每项首次执行要求对应夹具子目录不存在。脚本保存原回复、上下文、二进制摘要与派发计数；
+`prepare-reboot` 只杀夹具宿主，故意保留静默任务，脚本自身不重启系统。
+`verify-reboot` 要求内核标识改变、启动时间改变且当前运行时长符合准备后发生的启动，
+再检验原身份、释放与删除事实；不要求任意两次观察的运行时长都降低。
+
+macOS 与 OrbStack Ubuntu 25.04 均已依次通过格式、Clippy、完整 73 项 Cargo 回归与
+`managed_run` 示例。Linux 的四个验证入口也已实跑：跨 UID 连接在权限放宽后的夹具中被宿主拒绝；
+局部标识、来源范围与 PID 命名空间变化保留原任务与删除保护；整个 OrbStack 后端正常停止、启动后，
+内核标识夹具得到 `Gone/BootChanged`，原身份仍只派发一次且可删除。局部标识夹具保持
+`Detached/Protected`，不能证明消失。实验及证据见 [Linux 验证记录](docs/work/CORE-20261011-03.md)。
+这些结果不涵盖断电、OS 崩溃或 Agent 经 CLI 的模型评估。
 
 按用户决定（2026-10-10）暂不配置 CI，也不做多平台 CI；提交前在本地依次运行以上
 命令，实际验证过的平台见 [进度总览](docs/PROGRESS.md)。

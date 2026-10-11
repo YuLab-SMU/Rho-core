@@ -119,14 +119,16 @@ let chunk = core.read_output("agent-a", "sum-100", Stream::Stdout, 0, 64 * 1024)
   `held == false`。`Detached` 不会因运行锁释放变成终态。能否删除应检查
   `operation.retention`，不能只检查 `status` 或 `is_terminal()`。
 - `Gone` 表示没有 Core 持有时主进程已不在，是终态：`evidence` 为 `MainPidAbsent`
-  （派发时的启动会话与 pid 命名空间内该进程号不存在）或 `BootChanged`（派发后系统已重启，
+  （派发时的启动标识、来源范围与 pid 命名空间内该进程号不存在）或 `BootChanged`（两个内核来源标识确认派发后系统已重启，
   `pid` 为 `None` 时可能从未启动）。退出状态未知，不表示正常完成；`observed_at` 是观察到
   不存在的时刻，不是结束时刻。组释放仍单独确认，见[前一实例留下的运行](#前一实例留下的运行)。
 - 便利字段 `group_released == false` 包括未确认；精确信息在 `operation.group_released`。
   `Detached.present` 只投影运行锁是否被持有；观察失败的原因在 `operation.run_lock`。
 - `pid` 只在 `Finished` 之前指向该进程；回收后可能被系统复用，Core 不再向它发信号。
-- `NotStarted` 表示已受理且已知没有启动进程：准备运行文件失败、程序无法启动或启动前
+- `NotStarted` 表示已受理且已知没有启动进程：准备运行文件失败、原生启动接口返回失败或启动前
   已请求停止。重复送达返回同一记录，不会重试。
+  若平台先创建进程、再因执行程序失败退出，则保存真实启动与退出事实；Linux 上不可执行文件
+  经 `posix_spawn` 得到的退出码 127 不冒充同步启动失败。
 - `Exit::Unknown` 表示 Core 已不再持有进程，但读不到退出状态（例如宿主进程把 SIGCHLD
   设为忽略，导致子进程被自动回收）。
 - `truncated()` 为真表示有字节超过保留上限，已读到但未保留；`retention_error` 表示保留
@@ -189,8 +191,9 @@ Core 不限制任务自身写入项目的文件、网络或其他资源，这些
 - SQLite 使用 `WAL`、`synchronous=FULL` 与 `fullfsync=ON`；Blob 在引用提交前同步。
   已提交事务与未提交事务由 SQLite 恢复区分，未提交修改不会成为已受理或已保留事实。
   配置依据见 [SQLite synchronous](https://www.sqlite.org/pragma.html#pragma_synchronous)
-  与 [fullfsync](https://www.sqlite.org/pragma.html#pragma_fullfsync)。本次实验验证宿主 SIGKILL、
-  SQLite 容量与只读错误；没有断电或 OS 崩溃实验，不能据此宣称这些已经验证。
+  与 [fullfsync](https://www.sqlite.org/pragma.html#pragma_fullfsync)。已验证宿主 SIGKILL、
+  SQLite 容量与只读错误，以及整个 OrbStack 后端正常停止、启动后的记录接续；
+  没有断电或 OS 崩溃实验，不能据此宣称这些已经验证。
 - **受理**：幂等键检查、所有存储记录的容量检查与新记录插入在一个写事务中完成。
   成功提交后才允许派发；同一键始终找回原受理。派发调用前单独提交派发标记。
 - **事实保存**：启动/退出观测、取消、stdout、stderr 和释放各自独立提交；每次用 revision
@@ -201,9 +204,9 @@ Core 不限制任务自身写入项目的文件、网络或其他资源，这些
   | 已保存事实 | 重开后的结论 |
   | --- | --- |
   | 已受理，派发明确为 `NotAttempted` | 保存 `NotStarted` 结论，不派发 |
-  | 有派发标记，无启动或退出观测 | 启动未知，保留受理与已有输出，不派发；系统已重启时记为 `Gone`（`pid: None`）并已释放 |
-  | 有启动观测，无退出观测 | 保留原启动观测，不派发；主进程号不存在时记为 `Gone`，进程组为空时记为已释放 |
-  | 有退出观测，无释放确认 | 保留原退出，不派发；进程组为空时记为已释放，此前禁止删除 |
+  | 有派发标记，无启动或退出观测 | 启动未知，保留受理与已有输出，不派发；两个不同的 `Kernel` 标识确认重启时记为 `Gone`（`pid: None`）并已释放 |
+  | 有启动观测，无退出观测 | 保留原启动观测，不派发；相同身份上下文内主进程号不存在时记为 `Gone`，进程组为空时记为已释放；内核重启按下节规则确认 |
+  | 有退出观测，无释放确认 | 保留原退出，不派发；相同身份上下文内进程组为空或内核重启已确认时记为已释放，此前禁止删除 |
   | 有退出或 `Gone`，且释放已确认 | 原事实与有界输出可读；没有未保存事实时允许显式删除 |
 
   运行锁是否仍被持有只是一项附带当前观察。任务可以关闭/替换标准输入，或离开原进程组；
@@ -212,28 +215,39 @@ Core 不限制任务自身写入项目的文件、网络或其他资源，这些
 - **损坏**：数据库损坏/格式不符时 `open` 失败。行字段或引用不一致时明确报错，保留
   幂等键和材料；新受理也不能绕过损坏身份。
 - **开发数据**：当前仅维护 SQLite 格式。开发阶段变更存储格式时直接清除已停用的旧测试状态，
-  不建立旧格式识别、保留或迁移机制。格式 2 在派发标记中加入进程上下文；格式 1 的状态目录
-  打开时报告 `unsupported store format 1`，删除后重建。
+  不建立旧格式识别、保留或迁移机制。当前格式 3 在派发上下文中增加 `boot_id_scope`；旧格式的状态目录
+  打开时报告 `unsupported store format N`，删除已停用的测试状态后重建，不迁移。
 
 ### 前一实例留下的运行
 
 读取（`lookup`、`wait`、`list_operations`、`read_output`、`forget`）本实例未持有的已派发运行时，
 Core 只观察“不存在”：用信号 0 调用 `kill(pid, 0)`、`kill(-pgid, 0)` 并比较启动会话，不发信号、
 不重新持有、不补记退出码。派发标记保存当时的启动会话（macOS `kern.bootsessionuuid`，
-Linux `/proc/sys/kernel/random/boot_id`）与 Linux pid 命名空间（`/proc/self/ns/pid`）。
+Linux `/proc/sys/kernel/random/boot_id`）、标识来源范围 `boot_id_scope: BootIdScope` 与 Linux pid 命名空间（`/proc/self/ns/pid`）。
+`Kernel` 表示内核来源，`LocalView` 表示局部视图来源。Linux 从同一打开的文件句柄读取标识并用
+`fstatfs` 检查来源：procfs 为 `Kernel`，其他文件系统为 `LocalView`；读取或来源检查失败则没有上下文。
+macOS 的启动标识归为 `Kernel`。容器可能用局部文件覆盖该路径，字符串变化本身不能证明系统重启。
 
 | 当前观察 | 保存的事实（来源） |
 | --- | --- |
-| 启动会话与派发时不同 | 未结束的记为 `Gone { evidence: BootChanged }`，释放记为已确认（`BootSession`）；已保存的退出保持不变 |
-| 同一启动会话与 pid 命名空间，主进程号返回 ESRCH | `Gone { evidence: MainPidAbsent }`（`ProcessTable`） |
+| 两个 `Kernel` 启动标识不同 | 未结束的记为 `Gone { evidence: BootChanged }`，释放记为已确认（`BootSession`）；已保存的退出保持不变 |
+| 标识相同、来源范围相同且 pid 命名空间相同，主进程号返回 ESRCH | `Gone { evidence: MainPidAbsent }`（`ProcessTable`） |
 | 同上，进程组号返回 ESRCH | 释放记为已确认（`ProcessTable`） |
-| 派发时或现在读不到上下文、pid 命名空间不同 | 不下结论，继续受保护 |
+| 派发时或现在读不到上下文，或不满足上述身份边界 | 不下结论，继续受保护；局部标识变化、来源范围变化及同内核不同 pid 命名空间均不能证明不存在 |
 
 组内仍有成员时组号不会被系统复用，所以组号不存在即原组成员都已不在。进程号被复用、
 成员仍在或权限不足（EPERM）都读成仍存在，只会保持保护。用 `setsid` 等方式离开进程组的
 进程不在观察范围内。主进程与进程组都确认不在、没有未保存事实后，`forget` 可删除记录并
 释放请求键与 `max_records` 容量；`forget` 本身也会先做这项观察。崩溃在启动与保存启动观测
-之间时进程号未知，同一启动会话内记录保持保护，直到系统重启。
+之间时进程号未知，记录保持保护，直到两个不同的 `Kernel` 标识确认重启。
+这些判断沿用可信本地操作系统视图的前提；文件系统来源检查不提供对恶意挂载或被篡改 OS 视图的隔离保证。
+
+Linux 已在 OrbStack Ubuntu 25.04 实测三个仍有活任务的边界：`LocalView` 标识变化、
+`LocalView` 到 `Kernel` 的来源变化、同一内核标识下的不同 pid 命名空间。原操作均保持
+`Detached/Protected`，同身份提交返回原运行且派发计数不增加。整个 OrbStack 后端正常停止、
+启动后，内核标识夹具得到 `Gone/BootChanged` 与释放事实，重复请求仍为 `existing`、派发一次，
+随后可 `forget`；局部标识夹具无法证明消失，继续受保护。证据与范围见
+[Linux 验证记录](work/CORE-20261011-03.md)。
 
 ### 保留、删除与备份
 

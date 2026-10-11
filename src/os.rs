@@ -10,7 +10,7 @@ use std::os::fd::RawFd;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use crate::record::ProcessContext;
+use crate::record::{BootIdScope, ProcessContext};
 
 /// Reports whether `pid` has exited, leaving it unreaped (`WNOWAIT`).
 pub(crate) fn has_exited(pid: i32) -> io::Result<bool> {
@@ -68,8 +68,10 @@ pub(crate) fn process_context() -> Result<ProcessContext, String> {
     static CONTEXT: OnceLock<Result<ProcessContext, String>> = OnceLock::new();
     CONTEXT
         .get_or_init(|| {
+            let (boot_id, boot_id_scope) = boot_id().map_err(|e| format!("boot session: {e}"))?;
             Ok(ProcessContext {
-                boot_id: boot_id().map_err(|e| format!("boot session: {e}"))?,
+                boot_id,
+                boot_id_scope,
                 pid_namespace: pid_namespace().map_err(|e| format!("pid namespace: {e}"))?,
             })
         })
@@ -77,7 +79,7 @@ pub(crate) fn process_context() -> Result<ProcessContext, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn boot_id() -> io::Result<String> {
+fn boot_id() -> io::Result<(String, BootIdScope)> {
     let mut buffer = [0u8; 128];
     let mut length = buffer.len();
     // SAFETY: a NUL-terminated name and a buffer whose size is passed in `length`.
@@ -95,16 +97,35 @@ fn boot_id() -> io::Result<String> {
     }
     let bytes = &buffer[..length.min(buffer.len())];
     let text = bytes.split(|&b| b == 0).next().unwrap_or_default();
-    nonempty(String::from_utf8_lossy(text).into_owned())
+    nonempty(String::from_utf8_lossy(text).into_owned()).map(|id| (id, BootIdScope::Kernel))
 }
 
 #[cfg(target_os = "linux")]
-fn boot_id() -> io::Result<String> {
-    nonempty(std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?)
+fn boot_id() -> io::Result<(String, BootIdScope)> {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+
+    // Classify and read the same opened file: the path may be a bind-mounted
+    // local identity instead of the kernel's procfs value.
+    let mut file = std::fs::File::open("/proc/sys/kernel/random/boot_id")?;
+    // SAFETY: statfs is a plain syscall output structure; fstatfs fills it.
+    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: file owns a valid descriptor and stat is a valid output pointer.
+    if unsafe { libc::fstatfs(file.as_raw_fd(), &mut stat) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let scope = if i128::from(stat.f_type) == i128::from(libc::PROC_SUPER_MAGIC) {
+        BootIdScope::Kernel
+    } else {
+        BootIdScope::LocalView
+    };
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    nonempty(text).map(|id| (id, scope))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn boot_id() -> io::Result<String> {
+fn boot_id() -> io::Result<(String, BootIdScope)> {
     Err(io::Error::other(
         "no boot session identity on this platform",
     ))

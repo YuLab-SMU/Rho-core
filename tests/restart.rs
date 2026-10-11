@@ -14,9 +14,9 @@ use std::thread;
 use std::time::Duration;
 
 use rho_core::{
-    AbsenceEvidence, Core, CoreConfig, DispatchFact, Disposition, ExecutionFact, Executor,
-    FactSource, ForgetError, Knowledge, LookupError, ProcessContext, RetentionState, RunRequest,
-    RunStatus, Stream, SubmitError,
+    AbsenceEvidence, BootIdScope, Core, CoreConfig, DispatchFact, Disposition, ExecutionFact,
+    Executor, FactSource, ForgetError, Knowledge, LookupError, ProcessContext, RetentionState,
+    RunRequest, RunStatus, Stream, SubmitError,
 };
 
 const CALLER: &str = "agent-a";
@@ -522,19 +522,71 @@ fn edit_dispatch_context(paths: &Paths, edit: impl FnOnce(&mut Option<ProcessCon
 }
 
 #[test]
-fn a_run_from_an_earlier_boot_is_known_gone_even_without_a_pid() {
+fn a_changed_local_boot_view_does_not_prove_a_live_run_gone() {
+    let ex = experiment();
+    let host = start_host(&ex.paths, None);
+    ex.paths.wait_started();
+    kill(&host, &ex.paths);
+    reap_killed(host);
+    let pid: i32 = fs::read_to_string(ex.paths.work.join("dispatches.log"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // A remounted /proc can expose a different boot-id view in the same
+    // process namespace while the original task is still alive.
+    edit_dispatch_context(&ex.paths, |context| {
+        let context = context.as_mut().unwrap();
+        context.boot_id = "another-local-view".into();
+        context.boot_id_scope = BootIdScope::LocalView;
+    });
+    let core = reopen(&ex.paths);
+    let view = core.lookup(CALLER, ID).unwrap();
+    let dispatches = ex.paths.dispatches();
+    // Release the fixture before checking the snapshot so an expected
+    // regression failure does not leave its native task behind.
+    drop(core);
+    ex.paths.open_gate();
+    wait_pid_absent(pid);
+
+    assert!(
+        matches!(view.status, RunStatus::Detached { pid: Some(_), .. }),
+        "a changed view cannot prove this live process gone: {:?}",
+        view.status
+    );
+    assert_ne!(view.operation.group_released.value(), Some(&true));
+    assert_eq!(dispatches, 1);
+}
+
+#[test]
+fn only_a_changed_kernel_boot_proves_a_run_gone_without_a_pid() {
     let ex = experiment();
     reap_killed(start_host(&ex.paths, Some("dispatched")));
     // Injected store fact: the dispatch is recorded under another boot session.
     // Nothing was spawned, so no process of this run exists in the current one.
     let mut current = String::new();
+    let mut scope = None;
     edit_dispatch_context(&ex.paths, |context| {
         let context = context.as_mut().expect("context was readable");
         current = std::mem::replace(&mut context.boot_id, "earlier-boot".into());
+        scope = Some(context.boot_id_scope);
+        // A genuine kernel reboot proves absence even when namespaces differ.
+        context.pid_namespace = Some("pid:[earlier-boot]".into());
     });
 
     let core = reopen(&ex.paths);
     let view = core.lookup(CALLER, ID).unwrap();
+    if scope == Some(BootIdScope::LocalView) {
+        assert!(matches!(view.status, RunStatus::Detached { pid: None, .. }));
+        assert_ne!(view.operation.group_released.value(), Some(&true));
+        duplicates_find_the_original(&core, &ex.paths);
+        assert!(matches!(
+            core.forget(CALLER, ID),
+            Err(ForgetError::NotTerminal(_))
+        ));
+        assert_eq!(ex.paths.dispatches(), 0);
+        return;
+    }
     let RunStatus::Gone {
         pid: None,
         spawned_at: None,
@@ -603,6 +655,15 @@ fn pids_prove_nothing_without_the_dispatch_process_context() {
         None => "pid:[elsewhere]".into(),
     });
     edit_dispatch_context(&ex.paths, |context| *context = Some(elsewhere));
+    undecided(&ex.paths);
+
+    // Same boot text and namespace from a different source prove nothing.
+    let mut other_scope = recorded.clone();
+    other_scope.boot_id_scope = match recorded.boot_id_scope {
+        BootIdScope::Kernel => BootIdScope::LocalView,
+        BootIdScope::LocalView => BootIdScope::Kernel,
+    };
+    edit_dispatch_context(&ex.paths, |context| *context = Some(other_scope));
     undecided(&ex.paths);
 
     edit_dispatch_context(&ex.paths, |context| *context = Some(recorded));

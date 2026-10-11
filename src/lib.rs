@@ -33,8 +33,8 @@ use sha2::{Digest, Sha256};
 
 pub use error::{ForgetError, LookupError, OpenError, ReadError, SubmitError, WorkdirProblem};
 pub use record::{
-    AbsenceEvidence, BlobRef, DispatchFact, ExecutionFact, FactSource, Knowledge, OperationRecord,
-    OutputSet, OutputStream, ProcessContext, RequestKey, RetentionState,
+    AbsenceEvidence, BlobRef, BootIdScope, DispatchFact, ExecutionFact, FactSource, Knowledge,
+    OperationRecord, OutputSet, OutputStream, ProcessContext, RequestKey, RetentionState,
 };
 pub use run::{
     CancelInfo, CancelReason, Exit, OutputChunk, RequestInfo, RunStatus, RunView, Stream,

@@ -577,7 +577,7 @@ impl RunShared {
 
     /// For a dispatched run no Core holds, records only what the OS shows to be
     /// gone: the main process, its process group, or the whole boot session.
-    /// Pids are compared only within the dispatch's boot session and pid
+    /// Pids are compared only within the same boot identity, scope and pid
     /// namespace; nothing is signalled and no exit status is inferred.
     fn observe_absence(&self, state: &mut State) {
         if state.record.removable() {
@@ -596,7 +596,7 @@ impl RunShared {
         let released = state.record.group_released.value() == Some(&true);
         let mut gone = None;
         let mut release = None;
-        if dispatched.boot_id != current.boot_id {
+        if kernel_boot_changed(dispatched, &current) {
             if !execution.is_some_and(|fact| fact.rank() == 2) {
                 let (pid, spawned_at) = match execution {
                     Some(ExecutionFact::SpawnObserved { pid, spawned_at }) => {
@@ -613,7 +613,7 @@ impl RunShared {
             if !released {
                 release = Some(FactSource::BootSession);
             }
-        } else if dispatched.pid_namespace == current.pid_namespace {
+        } else if dispatched == &current {
             if let Some(ExecutionFact::SpawnObserved { pid, spawned_at }) = execution
                 && os::absent(*pid as i32)
             {
@@ -829,6 +829,12 @@ pub(crate) fn lookup_error(error: store::StoreError) -> LookupError {
         store::StoreError::Unreadable(reason) => LookupError::RecordUnreadable { reason },
         error => LookupError::Storage(error.to_string()),
     }
+}
+
+fn kernel_boot_changed(dispatched: &ProcessContext, current: &ProcessContext) -> bool {
+    dispatched.boot_id_scope == BootIdScope::Kernel
+        && current.boot_id_scope == BootIdScope::Kernel
+        && dispatched.boot_id != current.boot_id
 }
 
 fn probe(dir: &Path) -> io::Result<bool> {
@@ -1147,5 +1153,36 @@ impl Pump {
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_kernel_boot_changes_prove_absence_across_namespaces() {
+        for dispatched_scope in [BootIdScope::Kernel, BootIdScope::LocalView] {
+            for current_scope in [BootIdScope::Kernel, BootIdScope::LocalView] {
+                let dispatched = ProcessContext {
+                    boot_id: "before".into(),
+                    boot_id_scope: dispatched_scope,
+                    pid_namespace: Some("pid:[before]".into()),
+                };
+                let mut current = ProcessContext {
+                    boot_id: "after".into(),
+                    boot_id_scope: current_scope,
+                    pid_namespace: Some("pid:[after]".into()),
+                };
+                assert_eq!(
+                    kernel_boot_changed(&dispatched, &current),
+                    dispatched_scope == BootIdScope::Kernel && current_scope == BootIdScope::Kernel
+                );
+                // A namespace change within the same kernel boot proves no loss.
+                current.boot_id = dispatched.boot_id.clone();
+                assert!(!kernel_boot_changed(&dispatched, &current));
+                assert_ne!(dispatched, current);
+            }
+        }
     }
 }
