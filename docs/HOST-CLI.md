@@ -147,7 +147,9 @@ RFC 3339、精确到毫秒。`read` 返回 `text`、`offset`、`next_offset`、`
 - 宿主用 `getpeereid`（macOS）或 `SO_PEERCRED`（Linux）检查对端 uid，不同于宿主有效 uid 的连接收到
   `refused` 问候。Linux 已用现有 `nobody` 做实际连接测试：默认 0700 目录、0600 套接字先拒绝连接；
   只将独立夹具目录改为 0711、套接字改为 0666 后，宿主仍返回退出码 3、`refused`，
-  零受理、零派发，同 UID 后续调用正常。macOS 的跨 UID 行为未实测。
+  零受理、零派发，同 UID 后续调用正常。macOS 也已用
+  [`tests/macos_platform.py`](../tests/macos_platform.py) 实测这两层拒绝：普通宿主 UID 501、
+  另一 UID 4294967294，`getpeereid` 在放宽夹具权限后仍拒绝，零受理、零派发，同 UID 正常。
 - 调用方名称是同一用户内的命名空间，不是认证：同一用户的任何进程都可以使用任何调用方。
 - 运行以宿主用户的权限和环境执行；工作目录检查不是沙箱。见 [SECURITY](../SECURITY.md)。
 
@@ -174,5 +176,14 @@ RFC 3339、精确到毫秒。`read` 返回 `text`、`offset`、`next_offset`、`
 `Gone/BootChanged`，已释放且可删除；重复请求为 `existing`、派发计数保持 1，随后 `forget` 成功。
 普通 Ubuntu 局部标识夹具保持 `Detached/Protected`，重复请求仍为原运行，`forget` 被保护性拒绝。
 内核标识、启动时间与运行时长的实测依据见 [Linux 验证记录](work/CORE-20261011-03.md)。
-这些判断仍依赖可信本地 OS 视图，不提供新的隔离保证。断电或 OS 崩溃未验证；
-Agent 经此 CLI 的真实使用评估尚未运行。
+这些判断仍依赖可信本地 OS 视图，不提供新的隔离保证。独立 Debian guest 的真实内核 panic
+与虚拟断电已实测通过：保留原身份与完整/部分输出，活任务得到 BootChanged，重复请求不再次
+启动。证据与可执行入口见[故障验证说明](../tests/independent_vm.md)和
+[本轮记录](work/CORE-20261011-04.md)。Mac 物理断电与存储硬件失电未验证。
+
+真实 Agent 已在八类场景中经此 CLI 与常驻宿主重复运行，覆盖原六类场景及退出码 3、4。
+最终模型轮 15/16；未授权命令组合的失败仍保留，实际结果正确不能豁免权限约束。
+评估器的离线基线 8/8；这不是模型通过率。另有真实 Iris 精确置换分析通过独立数学核验、
+等待者中断后的同身份接续、完整输出与计算中取消检查。详情见
+[评估说明](../evals/claude-code/README.md)、[分析试点](../examples/scientific-pilot/README.md)
+与[本轮记录](work/CORE-20261011-04.md)。
