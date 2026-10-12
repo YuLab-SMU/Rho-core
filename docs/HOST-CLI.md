@@ -185,5 +185,5 @@ RFC 3339、精确到毫秒。`read` 返回 `text`、`offset`、`next_offset`、`
 最终模型轮 15/16；未授权命令组合的失败仍保留，实际结果正确不能豁免权限约束。
 评估器的离线基线 8/8；这不是模型通过率。另有真实 Iris 精确置换分析通过独立数学核验、
 等待者中断后的同身份接续、完整输出与计算中取消检查。详情见
-[评估说明](../evals/claude-code/README.md)、[分析试点](../examples/scientific-pilot/README.md)
+[评估说明](../../Rho-plugins/plugins/agent-eval/core-agent/README.md)、[分析试点](../examples/scientific-pilot/README.md)
 与[本轮记录](work/CORE-20261011-04.md)。

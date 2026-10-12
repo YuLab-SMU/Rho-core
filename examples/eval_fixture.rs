@@ -1,4 +1,4 @@
-//! Test-only stdio caller for evals/claude-code; no production protocol adapter.
+//! Minimal test-only stdio caller; external Agent evaluations live in Rho-plugins.
 use std::error::Error;
 use std::fs;
 use std::io::{self, BufRead, Read, Write};

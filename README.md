@@ -17,7 +17,7 @@ Rho Core 为 Agent 工作环境补足需要管理的本地执行：定位选定�
 | [信息模型与存储不变量](docs/INFORMATION-MODEL.md) | 请求键、操作身份、独立事实、事务边界、单调更新与删除保护 |
 | [受管运行契约](docs/MANAGED-RUN.md) | 调用方法、身份与去重、持有与停止、限额、存储与重启、不提供的保证 |
 | [本地宿主与 CLI](docs/HOST-CLI.md) | Agent 跨调用提交、等待、读输出与取消；退出码、宿主限额与故障语义 |
-| [Claude Code 行为评估](evals/claude-code/README.md) | 指定 Magpie/WestlakeHPC 模型使用 Core 的独立评估；真实夹具、事实评分与重复试验 |
+| [插件仓 Agent 评估](../Rho-plugins/plugins/agent-eval/core-agent/README.md) | 指定 Magpie/WestlakeHPC 模型使用 Core 的独立评估；真实夹具、事实评分与重复试验 |
 | [可独立核验的分析试点](examples/scientific-pilot/README.md) | 真实 Iris 精确置换检验、独立数学 oracle、公开 CLI 接续与取消 |
 | [四方向计划与本轮记录](docs/work/CORE-20261011-04.md) | 评估可靠性、真实 CLI Agent、可核验分析与平台故障验证 |
 | [使命与实施计划](docs/MISSION-AND-PLAN.md) | Agent 工作方式、受管价值、按需里程碑与验收 |
@@ -30,11 +30,12 @@ Rho Core 为 Agent 工作环境补足需要管理的本地执行：定位选定�
 | [重建与分支规则](docs/REBUILD.md) | 归档、主分支开发、独立验收与后续集成 |
 | [工作约束](AGENTS.md) | 后续实施时遵循的规则 |
 
-Core 从零重建与此前四方向任务只修改 Rho-core。当前另行选定的[真实 R 领域试用](docs/work/CORE-20261011-05.md)由 Rho-plugins 的消费者通过现有 CLI 验收，应用与插件仅记录后续重建边界；这不改变 Core 契约或旧组件组合。
+Core 从零重建与此前四方向任务只修改 Rho-core。此前另行选定的[真实 R 领域试用](docs/work/CORE-20261011-05.md)由 Rho-plugins 的消费者通过现有 CLI 验收，该轮应用与插件仅记录后续重建边界；这不改变 Core 契约或旧组件组合。
 
-此前单仓范围：[Rho 应用](https://github.com/YuLab-SMU/Rho) 和
+此前任务的单仓范围：[Rho 应用](https://github.com/YuLab-SMU/Rho) 和
 [Rho-plugins](https://github.com/YuLab-SMU/Rho-plugins) 保持原状，它们当前的 SDK、
-插件协议与组合选择不代表新 Core 的契约。协议接入层在 Core 的逻辑边界之外，
+插件协议与组合选择不代表新 Core 的契约。此次评估迁移是另行选定的跨仓任务，
+不改变 Core 运行契约，详情见[迁移记录](docs/work/CORE-20261012-01.md)。协议接入层在 Core 的逻辑边界之外，
 可以同仓同进程存在；不因此创建新仓库或要求全部外部工具编写 Rho 插件。
 跨仓集成另行选定，旧应用的历史验证不能作为新 Core 的通过证据。
 
@@ -98,4 +99,5 @@ macOS 与 OrbStack Ubuntu 25.04 均已依次通过格式、Clippy、完整 73 �
 
 Agent 评估按已选范围独立运行，使用 Claude Code 和 Magpie 的
 `westlakehpc/deepseek-v4.1-flash`，不成为普通 Cargo 检查或 Core 生产依赖。
-运行入口及未评分范围见 [评估说明](evals/claude-code/README.md)。
+评估器、CLI 控制器、场景与评分回归已迁入 Rho-plugins；仅使用显式选择的公共二进制，
+Core 保留自身 Rust 契约／故障回归和最小库调用示例。运行入口及未评分范围见 [评估说明](../Rho-plugins/plugins/agent-eval/core-agent/README.md)。
