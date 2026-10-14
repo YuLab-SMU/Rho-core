@@ -41,6 +41,9 @@ Core 从零重建与此前四方向任务只修改 Rho-core。此前另行选定
 
 首个受管流程：普通程序在临时项目中调用一个原生执行夹具；结束等待后找到原执行
 与结果，重复送达（含并发）不重派发，两个不同任务脚本无需增加 Core 方法入口。
+这里的“首个受管流程”指 Core 自身的首个程序调用闭环，与
+[Rho](https://github.com/YuLab-SMU/Rho) 文档中的 first integrated flow（应用层首个
+整体用户流程）不是同一件事，两者各自验收。
 调用与保证见 [受管运行契约](docs/MANAGED-RUN.md)，可运行调用见
 [`examples/managed_run.rs`](examples/managed_run.rs)，行为回归见
 [`tests/managed_run.rs`](tests/managed_run.rs)，故障实验见
