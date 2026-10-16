@@ -1,13 +1,16 @@
 //! Public-boundary checks of transaction failures and independent durable facts.
 use std::fs;
+use std::path::Path;
 use std::time::Duration;
 
 use rho_core::{
     Core, CoreConfig, Disposition, ExecutionFact, Executor, ForgetError, Knowledge, LookupError,
-    RunRequest, RunStatus, Stream, SubmitError,
+    RunRequest, RunStatus, RunView, Stream, SubmitError,
 };
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
+
+mod support;
 
 const CALLER: &str = "agent";
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -35,8 +38,8 @@ impl Fixture {
         }
     }
     fn dispatches(&self) -> usize {
-        fs::read_to_string(self.config.project_root.join("dispatches.log"))
-            .map_or(0, |s| s.lines().count())
+        support::dispatch::read(&self.config.project_root.join("dispatches.log"))
+            .map_or(0, |lines| lines.len())
     }
     fn run(&self, id: &str) -> rho_core::RunView {
         self.core.submit(CALLER, request(id, CODE)).unwrap();
@@ -49,14 +52,35 @@ impl Fixture {
     }
 }
 fn request(id: &str, code: &str) -> RunRequest {
-    RunRequest {
-        request_id: id.into(),
-        executor: "sh".into(),
-        workdir: ".".into(),
-        code: code.into(),
-        args: vec![],
-    }
+    support::request(id, "sh", ".", code, vec![])
 }
+
+#[track_caller]
+fn scalar<T: rusqlite::types::FromSql>(db: &Connection, sql: &str) -> T {
+    db.query_row(sql, [], |row| row.get(0)).unwrap()
+}
+
+#[track_caller]
+fn stdout(core: &Core, id: &str) -> Vec<u8> {
+    core.read_output(CALLER, id, Stream::Stdout, 0, 100)
+        .unwrap()
+        .bytes
+}
+
+#[track_caller]
+fn required_dispatches(project: &Path) -> usize {
+    support::dispatch::read(&project.join("dispatches.log"))
+        .unwrap()
+        .len()
+}
+
+#[track_caller]
+fn existing(core: &Core, id: &str, code: &str) -> RunView {
+    let again = core.submit(CALLER, request(id, code)).unwrap();
+    assert_eq!(again.disposition, Disposition::Existing);
+    again.run
+}
+
 fn reject_update(column: &str) -> String {
     format!(
         "CREATE TRIGGER reject_{column} BEFORE UPDATE OF {column} ON operations BEGIN SELECT RAISE(ABORT,'fixture write failure'); END;"
@@ -73,15 +97,8 @@ fn a_store_without_boot_identity_scope_is_rejected_without_migration() {
         core,
         db,
     } = fx;
-    assert_eq!(
-        db.query_row("SELECT format FROM store_info", [], |row| row
-            .get::<_, i64>(0))
-            .unwrap(),
-        3
-    );
-    let dispatch: String = db
-        .query_row("SELECT dispatch FROM operations", [], |row| row.get(0))
-        .unwrap();
+    assert_eq!(scalar::<i64>(&db, "SELECT format FROM store_info"), 3);
+    let dispatch: String = scalar(&db, "SELECT dispatch FROM operations");
     let mut old: serde_json::Value = serde_json::from_str(&dispatch).unwrap();
     old["Known"]["value"]["Attempted"]["context"]
         .as_object_mut()
@@ -98,23 +115,10 @@ fn a_store_without_boot_identity_scope_is_rejected_without_migration() {
         Err(error) => error,
     };
     assert!(error.to_string().contains("unsupported store format 2"));
-    let saved: String = db
-        .query_row("SELECT dispatch FROM operations", [], |row| row.get(0))
-        .unwrap();
+    let saved: String = scalar(&db, "SELECT dispatch FROM operations");
     assert_eq!(saved, old);
-    assert_eq!(
-        db.query_row("SELECT format FROM store_info", [], |row| row
-            .get::<_, i64>(0))
-            .unwrap(),
-        2
-    );
-    assert_eq!(
-        fs::read_to_string(config.project_root.join("dispatches.log"))
-            .unwrap()
-            .lines()
-            .count(),
-        1
-    );
+    assert_eq!(scalar::<i64>(&db, "SELECT format FROM store_info"), 2);
+    assert_eq!(required_dispatches(&config.project_root), 1);
 }
 
 #[test]
@@ -130,10 +134,7 @@ fn failed_acceptance_transaction_has_no_native_effect_and_can_be_retried() {
         Err(LookupError::NotFound { .. })
     ));
     assert_eq!(fx.dispatches(), 0);
-    let count: usize = fx
-        .db
-        .query_row("SELECT count(*) FROM operations", [], |r| r.get(0))
-        .unwrap();
+    let count: usize = scalar(&fx.db, "SELECT count(*) FROM operations");
     assert_eq!(count, 0);
     fx.trigger("DROP TRIGGER reject_accept;");
     fx.run("job");
@@ -156,9 +157,8 @@ fn a_dispatch_marker_that_cannot_commit_never_starts_the_executor() {
     );
     assert_eq!(fx.dispatches(), 0);
     fx.trigger("DROP TRIGGER reject_dispatch;");
-    let again = fx.core.submit(CALLER, request("job", CODE)).unwrap();
-    assert_eq!(again.disposition, Disposition::Existing);
-    assert!(again.run.unsaved.is_none());
+    let again = existing(&fx.core, "job", CODE);
+    assert!(again.unsaved.is_none());
     assert_eq!(fx.dispatches(), 0);
 }
 
@@ -186,25 +186,9 @@ fn exit_write_failure_preserves_durable_output_and_does_not_reexecute() {
         Knowledge::Unknown { .. }
     ));
     assert!(!found.is_terminal());
-    assert_eq!(
-        core.read_output(CALLER, "job", Stream::Stdout, 0, 100)
-            .unwrap()
-            .bytes,
-        b"output"
-    );
-    assert_eq!(
-        core.submit(CALLER, request("job", CODE))
-            .unwrap()
-            .disposition,
-        Disposition::Existing
-    );
-    assert_eq!(
-        fs::read_to_string(fx.config.project_root.join("dispatches.log"))
-            .unwrap()
-            .lines()
-            .count(),
-        1
-    );
+    assert_eq!(stdout(&core, "job"), b"output");
+    existing(&core, "job", CODE);
+    assert_eq!(required_dispatches(&fx.config.project_root), 1);
 }
 
 #[test]
@@ -215,10 +199,7 @@ fn a_failed_output_transaction_does_not_hide_exit_or_other_streams() {
     assert!(matches!(view.status, RunStatus::Finished { .. }));
     assert!(view.unsaved.as_deref().unwrap().contains("stdout"));
     assert_eq!(view.stderr.retained_bytes, 5);
-    let saved: String = fx
-        .db
-        .query_row("SELECT stdout FROM operations", [], |r| r.get(0))
-        .unwrap();
+    let saved: String = scalar(&fx.db, "SELECT stdout FROM operations");
     let metadata: serde_json::Value = serde_json::from_str(&saved).unwrap();
     let info: rho_core::StreamInfo = serde_json::from_value(metadata["info"].clone()).unwrap();
     assert_eq!(info.retained_bytes, 0);
@@ -230,13 +211,7 @@ fn a_failed_output_transaction_does_not_hide_exit_or_other_streams() {
     fx.trigger("DROP TRIGGER reject_stdout;");
     let found = fx.core.lookup(CALLER, "job").unwrap();
     assert!(found.unsaved.is_none());
-    assert_eq!(
-        fx.core
-            .read_output(CALLER, "job", Stream::Stdout, 0, 100)
-            .unwrap()
-            .bytes,
-        b"output"
-    );
+    assert_eq!(stdout(&fx.core, "job"), b"output");
     assert_eq!(fx.dispatches(), 1);
 }
 
@@ -292,13 +267,7 @@ fn damaged_output_is_never_served_as_the_original_bytes() {
         fx.core.read_output(CALLER, "job", Stream::Stdout, 0, 100),
         Err(rho_core::ReadError::Io(_))
     ));
-    assert_eq!(
-        fx.core
-            .submit(CALLER, request("job", CODE))
-            .unwrap()
-            .disposition,
-        Disposition::Existing
-    );
+    existing(&fx.core, "job", CODE);
     assert_eq!(fx.dispatches(), 1);
 }
 
@@ -338,9 +307,8 @@ fn failed_delete_transaction_preserves_the_key_until_explicit_commit() {
         fx.core.forget(CALLER, "job"),
         Err(ForgetError::Io(_))
     ));
-    let found = fx.core.submit(CALLER, request("job", CODE)).unwrap();
-    assert_eq!(found.disposition, Disposition::Existing);
-    assert_eq!(found.run.run_id, original.run_id);
+    let found = existing(&fx.core, "job", CODE);
+    assert_eq!(found.run_id, original.run_id);
     assert_eq!(fx.dispatches(), 1);
     fx.trigger("DROP TRIGGER reject_delete;");
     fx.core.forget(CALLER, "job").unwrap();
@@ -364,13 +332,7 @@ fn a_corrupt_database_is_not_initialized_as_an_empty_store() {
     )
     .unwrap();
     assert!(Core::open(config.clone()).is_err());
-    assert_eq!(
-        fs::read_to_string(config.project_root.join("dispatches.log"))
-            .unwrap()
-            .lines()
-            .count(),
-        1
-    );
+    assert_eq!(required_dispatches(&config.project_root), 1);
     fs::write(config.state_dir.join("core.sqlite3"), b"").unwrap();
     let error = Core::open(config).err().unwrap();
     assert!(error.to_string().contains("truncated"));
@@ -380,10 +342,7 @@ fn a_corrupt_database_is_not_initialized_as_an_empty_store() {
 fn sqlite_online_backup_keeps_committed_metadata_and_artifact_references() {
     let fx = Fixture::new();
     let view = fx.run("job");
-    let mode: String = fx
-        .db
-        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
-        .unwrap();
+    let mode: String = scalar(&fx.db, "PRAGMA journal_mode");
     assert_eq!(mode, "wal");
     // Hot backup through SQLite includes committed WAL frames; copying only
     // core.sqlite3 does not provide this guarantee. Full backups also need blobs.
@@ -399,12 +358,7 @@ fn sqlite_online_backup_keeps_committed_metadata_and_artifact_references() {
         .unwrap();
     assert_eq!(id, view.run_id);
     assert_eq!(count, 3); // immutable script, stdout and stderr.
-    assert_eq!(
-        backup
-            .query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
-            .unwrap(),
-        "ok"
-    );
+    assert_eq!(scalar::<String>(&backup, "PRAGMA integrity_check"), "ok");
 }
 
 #[test]
@@ -464,13 +418,7 @@ fn forgetting_another_operation_preserves_blobs_needed_by_unsaved_output() {
     let pending = fx.run("pending");
     assert!(pending.unsaved.is_some());
     fx.core.forget(CALLER, "first").unwrap();
-    assert_eq!(
-        fx.core
-            .read_output(CALLER, "pending", Stream::Stdout, 0, 100)
-            .unwrap()
-            .bytes,
-        b"output"
-    );
+    assert_eq!(stdout(&fx.core, "pending"), b"output");
     fx.trigger("DROP TRIGGER reject_stdout;");
     assert!(fx.core.lookup(CALLER, "pending").unwrap().unsaved.is_none());
     fx.core.forget(CALLER, "pending").unwrap();
@@ -496,23 +444,14 @@ fn empty_script_snapshots_are_referenced_and_survive_other_acceptances() {
         assert_eq!(view.operation.script.bytes, 0);
     }
     assert_eq!(
-        fx.db
-            .query_row(
-                "SELECT count(*) FROM artifacts WHERE kind='script' AND bytes=0",
-                [],
-                |r| r.get::<_, usize>(0)
-            )
-            .unwrap(),
+        scalar::<usize>(
+            &fx.db,
+            "SELECT count(*) FROM artifacts WHERE kind='script' AND bytes=0"
+        ),
         2
     );
     fx.core.forget(CALLER, "empty-one").unwrap();
-    assert_eq!(
-        fx.core
-            .submit(CALLER, request("empty-two", ""))
-            .unwrap()
-            .disposition,
-        Disposition::Existing
-    );
+    existing(&fx.core, "empty-two", "");
 }
 
 #[test]
@@ -556,19 +495,11 @@ fn concurrent_new_keys_share_the_global_record_capacity() {
             .unwrap()
             .is_terminal()
     );
-    assert_eq!(
-        fs::read_to_string(fx.config.project_root.join("dispatches.log"))
-            .unwrap()
-            .lines()
-            .count(),
-        1
-    );
+    assert_eq!(required_dispatches(&fx.config.project_root), 1);
 }
 
 #[test]
 fn corrupt_metadata_does_not_prevent_shutdown_from_confirming_owned_process_stop() {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
     let fx = Fixture::new();
     let mut config = fx.config.clone();
     drop(fx.core);
@@ -577,9 +508,7 @@ fn corrupt_metadata_does_not_prevent_shutdown_from_confirming_owned_process_stop
     let ready = fx._tmp.path().join("ready");
     let release = fx._tmp.path().join("release");
     for path in [&ready, &release] {
-        let path = CString::new(path.as_os_str().as_bytes()).unwrap();
-        // SAFETY: valid NUL-terminated fixture path, no pointers retained.
-        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        support::fifo(path);
     }
     let mut request = request(
         "owned",
@@ -591,9 +520,10 @@ fn corrupt_metadata_does_not_prevent_shutdown_from_confirming_owned_process_stop
         RunStatus::Running { pid, .. } => pid,
         ref status => panic!("{status:?}"),
     };
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || sender.send(fs::read_to_string(ready).unwrap()).unwrap());
-    assert_eq!(receiver.recv_timeout(PATIENCE).unwrap(), "ready\n");
+    let started = support::within(PATIENCE, "owned process start", move || {
+        fs::read_to_string(ready).unwrap()
+    });
+    assert_eq!(started, "ready\n");
     fx.db
         .execute_batch("UPDATE operations SET accepted='{ corrupted metadata';")
         .unwrap();

@@ -4,12 +4,10 @@
 //! `dispatches.log` in its working directory, so dispatch counts come from the
 //! native side, not from Core. Timing is synchronised with FIFOs, not sleeps.
 
-use std::ffi::CString;
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Barrier, mpsc};
+use std::sync::Barrier;
 use std::thread;
 use std::time::Duration;
 
@@ -19,6 +17,9 @@ use rho_core::{
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
+
+mod support;
+use support::within;
 
 const CALLER: &str = "agent-a";
 const PATIENCE: Duration = Duration::from_secs(20);
@@ -80,20 +81,12 @@ fn fixture_with(limits: Limits, executor: Executor) -> Fixture {
 }
 
 fn request(id: &str, code: &str, args: &[&str]) -> RunRequest {
-    RunRequest {
-        request_id: id.into(),
-        executor: "sh".into(),
-        workdir: "work".into(),
-        code: code.into(),
-        args: args.iter().map(|arg| arg.to_string()).collect(),
-    }
+    let args = args.iter().map(|arg| arg.to_string()).collect();
+    support::request(id, "sh", "work", code, args)
 }
 
 fn dispatches(dir: &Path) -> Vec<String> {
-    match fs::read_to_string(dir.join("dispatches.log")) {
-        Ok(text) => text.lines().map(str::to_owned).collect(),
-        Err(_) => Vec::new(),
-    }
+    support::dispatch::read(&dir.join("dispatches.log")).unwrap_or_default()
 }
 
 fn pid_of(view: &RunView) -> u32 {
@@ -108,6 +101,20 @@ fn exit_of(view: &RunView) -> Exit {
         RunStatus::Finished { exit, .. } => exit.clone(),
         other => panic!("run not finished: {other:?}"),
     }
+}
+
+#[track_caller]
+fn assert_finished_and_released(status: &RunStatus) {
+    assert!(
+        matches!(
+            status,
+            RunStatus::Finished {
+                group_released: true,
+                ..
+            }
+        ),
+        "{status:?}"
+    );
 }
 
 fn finished(core: &Core, id: &str) -> RunView {
@@ -141,8 +148,7 @@ impl Gate {
             release: dir.join(format!("{name}.release")),
         };
         for path in [&gate.started, &gate.release] {
-            let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
-            assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+            support::fifo(path);
         }
         gate
     }
@@ -156,25 +162,19 @@ impl Gate {
 
     fn wait_started(&self) {
         let path = self.started.clone();
-        let text = within("task start", move || fs::read_to_string(path).unwrap());
+        let text = within(PATIENCE, "task start", move || {
+            fs::read_to_string(path).unwrap()
+        });
         assert_eq!(text, "started\n");
     }
 
     fn open(&self, line: &str) {
         let path = self.release.clone();
         let line = format!("{line}\n");
-        within("gate release", move || fs::write(path, line).unwrap());
+        within(PATIENCE, "gate release", move || {
+            fs::write(path, line).unwrap()
+        });
     }
-}
-
-fn within<T: Send + 'static>(what: &str, action: impl FnOnce() -> T + Send + 'static) -> T {
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = sender.send(action());
-    });
-    receiver
-        .recv_timeout(PATIENCE)
-        .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
 fn gated(id: &str, gate: &Gate, code: &str) -> RunRequest {
@@ -344,25 +344,16 @@ fn same_identity_with_a_different_request_is_rejected() {
     fx.core.submit(CALLER, request("sum", SUM, &["5"])).unwrap();
     let original = finished(&fx.core, "sum");
 
-    let changed_args = fx
-        .core
-        .submit(CALLER, request("sum", SUM, &["6"]))
-        .unwrap_err();
-    let changed_code = fx
-        .core
-        .submit(CALLER, request("sum", GROUP_COUNT, &["5"]))
-        .unwrap_err();
-    let changed_workdir = fx
-        .core
-        .submit(
-            CALLER,
-            RunRequest {
-                workdir: "./work".into(),
-                ..request("sum", SUM, &["5"])
-            },
-        )
-        .unwrap_err();
-    for error in [changed_args, changed_code, changed_workdir] {
+    let conflicts = [
+        request("sum", SUM, &["6"]),
+        request("sum", GROUP_COUNT, &["5"]),
+        RunRequest {
+            workdir: "./work".into(),
+            ..request("sum", SUM, &["5"])
+        },
+    ];
+    let errors = conflicts.map(|request| fx.core.submit(CALLER, request).unwrap_err());
+    for error in errors {
         match error {
             SubmitError::Conflict { existing } => assert_eq!(*existing, original),
             other => panic!("expected conflict, got {other:?}"),
@@ -619,13 +610,7 @@ fn cancel_is_a_request_and_stop_is_confirmed_separately() {
     let view = finished(&fx.core, "long");
     assert_eq!(exit_of(&view), Exit::Signal(libc::SIGTERM));
     assert!(view.cancel.unwrap().term_sent_at.is_some());
-    assert!(matches!(
-        view.status,
-        RunStatus::Finished {
-            group_released: true,
-            ..
-        }
-    ));
+    assert_finished_and_released(&view.status);
     assert!(
         !process_alive(background),
         "group member {background} survived"
@@ -693,13 +678,7 @@ echo "main done""#;
     );
 
     assert_eq!(exit_of(&view), Exit::Code(0));
-    assert!(matches!(
-        view.status,
-        RunStatus::Finished {
-            group_released: true,
-            ..
-        }
-    ));
+    assert_finished_and_released(&view.status);
     assert!(
         !view.stdout.eof,
         "stdout is still held open outside the group"
@@ -718,13 +697,7 @@ echo "main done""#;
         .unwrap();
     let view = finished(&fx.core, "leaves-child");
     assert_eq!(exit_of(&view), Exit::Code(0));
-    assert!(matches!(
-        view.status,
-        RunStatus::Finished {
-            group_released: true,
-            ..
-        }
-    ));
+    assert_finished_and_released(&view.status);
     assert!(view.stdout.eof, "background member held stdout open");
     assert_eq!(stdout(&fx.core, "leaves-child"), "main done\n");
     let background: u32 = fs::read_to_string(fx.work.join("background.pid"))

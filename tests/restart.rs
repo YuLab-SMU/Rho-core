@@ -4,20 +4,21 @@
 //! (`RHO_CORE_CRASH_AT`) or by the test. A new Core opened on the same state
 //! dir must find the request and never dispatch it again.
 
-use std::ffi::CString;
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Barrier, mpsc};
+use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Duration;
 
 use rho_core::{
     AbsenceEvidence, BootIdScope, Core, CoreConfig, DispatchFact, Disposition, ExecutionFact,
     Executor, FactSource, ForgetError, Knowledge, LookupError, ProcessContext, RetentionState,
-    RunRequest, RunStatus, Stream, SubmitError,
+    RunRequest, RunStatus, RunView, Stream, SubmitError,
 };
+
+mod support;
+use support::within;
 
 const CALLER: &str = "agent-a";
 const ID: &str = "job";
@@ -60,42 +61,44 @@ impl Paths {
     }
 
     fn request(&self) -> RunRequest {
-        RunRequest {
-            request_id: ID.into(),
-            executor: "sh".into(),
-            workdir: "work".into(),
-            code: fs::read_to_string(self.root.join("task.code")).unwrap_or_else(|_| GATED.into()),
-            args: vec![
+        support::request(
+            ID,
+            "sh",
+            "work",
+            &fs::read_to_string(self.root.join("task.code")).unwrap_or_else(|_| GATED.into()),
+            vec![
                 self.started.display().to_string(),
                 self.release.display().to_string(),
             ],
-        }
+        )
     }
 
     fn dispatches(&self) -> usize {
-        fs::read_to_string(self.work.join("dispatches.log")).map_or(0, |t| t.lines().count())
+        support::dispatch::read(&self.work.join("dispatches.log")).map_or(0, |lines| lines.len())
+    }
+
+    fn dispatched_pid(&self) -> i32 {
+        fs::read_to_string(self.work.join("dispatches.log"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
     }
 
     fn wait_started(&self) {
         let path = self.started.clone();
-        let text = within("task start", move || fs::read_to_string(path).unwrap());
+        let text = within(PATIENCE, "task start", move || {
+            fs::read_to_string(path).unwrap()
+        });
         assert_eq!(text, "started\n");
     }
 
     fn open_gate(&self) {
         let path = self.release.clone();
-        within("gate release", move || fs::write(path, "go\n").unwrap());
+        within(PATIENCE, "gate release", move || {
+            fs::write(path, "go\n").unwrap()
+        });
     }
-}
-
-fn within<T: Send + 'static>(what: &str, action: impl FnOnce() -> T + Send + 'static) -> T {
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = sender.send(action());
-    });
-    receiver
-        .recv_timeout(PATIENCE)
-        .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
 struct Experiment {
@@ -109,8 +112,7 @@ fn experiment() -> Experiment {
     let paths = Paths::new(&root);
     fs::create_dir_all(&paths.work).unwrap();
     for fifo in [&paths.started, &paths.release] {
-        let c_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        support::fifo(fifo);
     }
     Experiment { paths, _tmp: tmp }
 }
@@ -149,7 +151,7 @@ fn host_command(paths: &Paths, crash_at: Option<&str>, cancel: bool) -> Command 
 /// Waits for the host to die by SIGKILL, as a crash point or the test made it.
 fn reap_killed(mut host: Child) {
     use std::os::unix::process::ExitStatusExt;
-    let status = within("host exit", move || host.wait().unwrap());
+    let status = within(PATIENCE, "host exit", move || host.wait().unwrap());
     assert_eq!(
         status.signal(),
         Some(libc::SIGKILL),
@@ -169,6 +171,14 @@ fn kill(host: &Child, paths: &Paths) {
         thread::sleep(Duration::from_millis(10));
     }
     unsafe { libc::kill(host.id() as i32, libc::SIGKILL) };
+}
+
+/// Crashes a default host only after both native start and submit acknowledgement.
+fn crash_running_host(paths: &Paths) {
+    let host = start_host(paths, None);
+    paths.wait_started();
+    kill(&host, paths);
+    reap_killed(host);
 }
 
 /// Not a check: the entry point of a host process started by the experiments.
@@ -225,6 +235,30 @@ fn host_process() {
 
 fn reopen(paths: &Paths) -> Core {
     Core::open(paths.config()).unwrap()
+}
+
+#[track_caller]
+fn stdout(core: &Core, limit: usize) -> Vec<u8> {
+    core.read_output(CALLER, ID, Stream::Stdout, 0, limit)
+        .unwrap()
+        .bytes
+}
+
+#[track_caller]
+fn assert_forget_protected(core: &Core) {
+    assert!(matches!(
+        core.forget(CALLER, ID),
+        Err(ForgetError::NotTerminal(_))
+    ));
+}
+
+#[track_caller]
+fn assert_gone(view: &RunView) {
+    assert!(
+        matches!(view.status, RunStatus::Gone { .. }),
+        "{:?}",
+        view.status
+    );
 }
 
 /// A duplicate after restart finds the original and dispatches nothing,
@@ -364,10 +398,7 @@ fn crash_after_spawn_before_it_is_saved_keeps_the_process_detached() {
 #[test]
 fn host_killed_while_holding_a_run_leaves_it_detached_not_rerun() {
     let ex = experiment();
-    let host = start_host(&ex.paths, None);
-    ex.paths.wait_started();
-    kill(&host, &ex.paths);
-    reap_killed(host);
+    crash_running_host(&ex.paths);
 
     let core = reopen(&ex.paths);
     let view = core.lookup(CALLER, ID).unwrap();
@@ -425,10 +456,7 @@ fn wait_pid_absent(pid: i32) {
 #[test]
 fn a_detached_run_that_ended_can_be_forgotten_to_recover_capacity() {
     let ex = experiment();
-    let host = start_host(&ex.paths, None);
-    ex.paths.wait_started();
-    kill(&host, &ex.paths);
-    reap_killed(host);
+    crash_running_host(&ex.paths);
 
     let mut config = ex.paths.config();
     config.limits.max_records = 1;
@@ -442,10 +470,7 @@ fn a_detached_run_that_ended_can_be_forgotten_to_recover_capacity() {
         core.submit(CALLER, other.clone()),
         Err(SubmitError::Capacity { .. })
     ));
-    assert!(matches!(
-        core.forget(CALLER, ID),
-        Err(ForgetError::NotTerminal(_))
-    ));
+    assert_forget_protected(&core);
 
     // The task ends with no Core holding it; a native probe sees it gone.
     ex.paths.open_gate();
@@ -524,15 +549,8 @@ fn edit_dispatch_context(paths: &Paths, edit: impl FnOnce(&mut Option<ProcessCon
 #[test]
 fn a_changed_local_boot_view_does_not_prove_a_live_run_gone() {
     let ex = experiment();
-    let host = start_host(&ex.paths, None);
-    ex.paths.wait_started();
-    kill(&host, &ex.paths);
-    reap_killed(host);
-    let pid: i32 = fs::read_to_string(ex.paths.work.join("dispatches.log"))
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    crash_running_host(&ex.paths);
+    let pid: i32 = ex.paths.dispatched_pid();
     // A remounted /proc can expose a different boot-id view in the same
     // process namespace while the original task is still alive.
     edit_dispatch_context(&ex.paths, |context| {
@@ -580,10 +598,7 @@ fn only_a_changed_kernel_boot_proves_a_run_gone_without_a_pid() {
         assert!(matches!(view.status, RunStatus::Detached { pid: None, .. }));
         assert_ne!(view.operation.group_released.value(), Some(&true));
         duplicates_find_the_original(&core, &ex.paths);
-        assert!(matches!(
-            core.forget(CALLER, ID),
-            Err(ForgetError::NotTerminal(_))
-        ));
+        assert_forget_protected(&core);
         assert_eq!(ex.paths.dispatches(), 0);
         return;
     }
@@ -617,19 +632,12 @@ fn only_a_changed_kernel_boot_proves_a_run_gone_without_a_pid() {
 #[test]
 fn pids_prove_nothing_without_the_dispatch_process_context() {
     let ex = experiment();
-    let host = start_host(&ex.paths, None);
-    ex.paths.wait_started();
-    kill(&host, &ex.paths);
-    reap_killed(host);
+    crash_running_host(&ex.paths);
     let mut recorded = None;
     edit_dispatch_context(&ex.paths, |context| recorded = context.take());
     let recorded = recorded.expect("context was readable");
     ex.paths.open_gate();
-    let pid: i32 = fs::read_to_string(ex.paths.work.join("dispatches.log"))
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let pid: i32 = ex.paths.dispatched_pid();
     wait_pid_absent(pid);
 
     let undecided = |paths: &Paths| {
@@ -641,10 +649,7 @@ fn pids_prove_nothing_without_the_dispatch_process_context() {
             view.status
         );
         assert_ne!(view.operation.group_released.value(), Some(&true));
-        assert!(matches!(
-            core.forget(CALLER, ID),
-            Err(ForgetError::NotTerminal(_))
-        ));
+        assert_forget_protected(&core);
     };
     // An unreadable context at dispatch.
     undecided(&ex.paths);
@@ -684,8 +689,7 @@ fn pids_prove_nothing_without_the_dispatch_process_context() {
 fn a_group_member_that_outlives_the_main_process_keeps_the_record() {
     let ex = experiment();
     let member_gate = ex.paths.work.join("member.gate");
-    let c_path = CString::new(member_gate.as_os_str().as_bytes()).unwrap();
-    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    support::fifo(&member_gate);
     // The member does not hold the run lock or the output pipes.
     fs::write(
         ex.paths.root.join("task.code"),
@@ -695,10 +699,7 @@ fn a_group_member_that_outlives_the_main_process_keeps_the_record() {
          read line < \"$2\"\n",
     )
     .unwrap();
-    let host = start_host(&ex.paths, None);
-    ex.paths.wait_started();
-    kill(&host, &ex.paths);
-    reap_killed(host);
+    crash_running_host(&ex.paths);
     let core = reopen(&ex.paths);
     let pid = saved_pid(&core);
 
@@ -721,13 +722,10 @@ fn a_group_member_that_outlives_the_main_process_keeps_the_record() {
         view.operation.retention,
         RetentionState::Protected { .. }
     ));
-    assert!(matches!(
-        core.forget(CALLER, ID),
-        Err(ForgetError::NotTerminal(_))
-    ));
+    assert_forget_protected(&core);
     duplicates_find_the_original(&core, &ex.paths);
 
-    within("member release", move || {
+    within(PATIENCE, "member release", move || {
         fs::write(member_gate, "go\n").unwrap()
     });
     let deadline = std::time::Instant::now() + PATIENCE;
@@ -758,18 +756,11 @@ fn closing_inherited_stdin_does_not_confirm_exit_after_host_crash() {
         format!("exec 0</dev/null\n{GATED}"),
     )
     .unwrap();
-    let host = start_host(&ex.paths, None);
-    ex.paths.wait_started();
-    kill(&host, &ex.paths);
-    reap_killed(host);
+    crash_running_host(&ex.paths);
     let core = reopen(&ex.paths);
     let view = core.lookup(CALLER, ID).unwrap();
     let forget = core.forget(CALLER, ID);
-    let pid: i32 = fs::read_to_string(ex.paths.work.join("dispatches.log"))
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let pid: i32 = ex.paths.dispatched_pid();
     let alive = unsafe { libc::kill(pid, 0) } == 0;
     // Release the fixture before asserting, including on the former implementation.
     ex.paths.open_gate();
@@ -821,10 +812,7 @@ fn crash_after_exit_before_the_outcome_is_saved_keeps_retained_output() {
         "{:?}",
         view.status
     );
-    let chunk = core
-        .read_output(CALLER, ID, Stream::Stdout, 0, 1024)
-        .unwrap();
-    assert_eq!(chunk.bytes, b"released:go\n");
+    assert_eq!(stdout(&core, 1024), b"released:go\n");
     duplicates_find_the_original(&core, &ex.paths);
     assert_eq!(ex.paths.dispatches(), 1);
 }
@@ -842,10 +830,7 @@ fn a_finished_run_is_found_with_its_outcome_after_restart() {
 
     let core = reopen(&ex.paths);
     assert_eq!(core.lookup(CALLER, ID).unwrap(), finished);
-    let chunk = core
-        .read_output(CALLER, ID, Stream::Stdout, 0, 1024)
-        .unwrap();
-    assert_eq!(chunk.bytes, b"released:go\n");
+    assert_eq!(stdout(&core, 1024), b"released:go\n");
     duplicates_find_the_original(&core, &ex.paths);
     assert_eq!(ex.paths.dispatches(), 1);
 }
@@ -968,11 +953,7 @@ fn a_saved_cancel_survives_a_crash_but_is_not_reported_as_a_stop() {
     ex.paths.open_gate();
     let view = core.wait(CALLER, ID, PATIENCE).unwrap();
     // Its end is observed, but not as the effect of a stop signal.
-    assert!(
-        matches!(view.status, RunStatus::Gone { .. }),
-        "{:?}",
-        view.status
-    );
+    assert_gone(&view);
     let cancel = view.cancel.as_ref().unwrap();
     assert!(cancel.term_sent_at.is_none() && cancel.kill_sent_at.is_none());
     assert_eq!(ex.paths.dispatches(), 1);
@@ -1015,24 +996,12 @@ fn output_observations_and_truncation_survive_a_crash_before_exit() {
     assert!(view.stdout.truncated());
     assert!(!view.stdout.eof);
     assert!(!view.is_terminal());
-    assert_eq!(
-        core.read_output(CALLER, ID, Stream::Stdout, 0, 100)
-            .unwrap()
-            .bytes,
-        b"1234567890"
-    );
+    assert_eq!(stdout(&core, 100), b"1234567890");
     duplicates_find_the_original(&core, &ex.paths);
-    assert!(matches!(
-        core.forget(CALLER, ID),
-        Err(ForgetError::NotTerminal(_))
-    ));
+    assert_forget_protected(&core);
     ex.paths.open_gate();
     let view = core.wait(CALLER, ID, PATIENCE).unwrap();
-    assert!(
-        matches!(view.status, RunStatus::Gone { .. }),
-        "{:?}",
-        view.status
-    );
+    assert_gone(&view);
     // Later output was not retained; the end does not claim it was.
     assert_eq!(view.stdout.retained_bytes, 10);
     assert!(view.stdout.retention_error.is_some() && !view.stdout.eof);
@@ -1053,20 +1022,11 @@ fn an_interrupted_output_transaction_never_publishes_uncommitted_blob_bytes() {
     let core = reopen(&ex.paths);
     let view = core.lookup(CALLER, ID).unwrap();
     assert_eq!(view.stdout.retained_bytes, 0);
-    assert!(
-        core.read_output(CALLER, ID, Stream::Stdout, 0, 100)
-            .unwrap()
-            .bytes
-            .is_empty()
-    );
+    assert!(stdout(&core, 100).is_empty());
     duplicates_find_the_original(&core, &ex.paths);
     ex.paths.open_gate();
     let view = core.wait(CALLER, ID, PATIENCE).unwrap();
-    assert!(
-        matches!(view.status, RunStatus::Gone { .. }),
-        "{:?}",
-        view.status
-    );
+    assert_gone(&view);
     assert_eq!(view.stdout.retained_bytes, 0);
 }
 
@@ -1114,7 +1074,7 @@ fn a_failed_term_is_not_reported_as_sent_or_as_a_confirmed_stop() {
         .env("RHO_CORE_FAIL_AT", "signal-term")
         .spawn()
         .unwrap();
-    let status = within("signal experiment", move || host.wait().unwrap());
+    let status = within(PATIENCE, "signal experiment", move || host.wait().unwrap());
     assert!(status.success(), "{status}");
     let record: rho_core::OperationRecord =
         serde_json::from_slice(&fs::read(ex.paths.root.join("signal-result.json")).unwrap())
@@ -1153,12 +1113,7 @@ fn a_crash_inside_deletion_keeps_the_acceptance_and_its_blobs() {
     let ex = delete_crash("delete-staged");
     let core = reopen(&ex.paths);
     assert!(core.lookup(CALLER, ID).unwrap().is_terminal());
-    assert_eq!(
-        core.read_output(CALLER, ID, Stream::Stdout, 0, 100)
-            .unwrap()
-            .bytes,
-        b"finished"
-    );
+    assert_eq!(stdout(&core, 100), b"finished");
     duplicates_find_the_original(&core, &ex.paths);
     assert_eq!(ex.paths.dispatches(), 1);
 }

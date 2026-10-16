@@ -14,6 +14,9 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use tempfile::TempDir;
 
+#[path = "support/dispatch.rs"]
+mod dispatch;
+
 const BIN: &str = env!("CARGO_BIN_EXE_rho-core");
 const CALLER: &str = "agent";
 const PATIENCE: Duration = Duration::from_secs(20);
@@ -44,7 +47,7 @@ impl Fixture {
     }
 
     fn dispatches(&self) -> usize {
-        fs::read_to_string(self.work("dispatches.txt")).map_or(0, |text| text.lines().count())
+        dispatch::read(&self.work("dispatches.txt")).map_or(0, |lines| lines.len())
     }
 
     fn release(&self) {
@@ -174,8 +177,8 @@ fn reply(output: Output) -> (i32, Value) {
     (code, value)
 }
 
-fn submit(host: &Host, id: &str, code: &str) -> (i32, Value) {
-    host.cli(&[
+fn submit_args<'a>(id: &'a str, code: &'a str) -> [&'a str; 9] {
+    [
         "submit",
         "--id",
         id,
@@ -185,7 +188,11 @@ fn submit(host: &Host, id: &str, code: &str) -> (i32, Value) {
         "analysis",
         "--code",
         code,
-    ])
+    ]
+}
+
+fn submit(host: &Host, id: &str, code: &str) -> (i32, Value) {
+    host.cli(&submit_args(id, code))
 }
 
 fn eventually(what: &str, mut done: impl FnMut() -> bool) {
@@ -209,25 +216,21 @@ printf 'run\\n' >> dispatches.txt
 echo out; echo err >&2
 while [ ! -f release ]; do sleep 0.05; done
 echo done";
-    let (code, accepted) = cli(
-        &host.socket,
-        CALLER,
-        &[
-            "submit",
-            "--id",
-            "job-1",
-            "--executor",
-            "sh",
-            "--workdir",
-            "analysis",
-            "--code-file",
-            "-",
-            "--",
-            "alpha",
-            "beta gamma",
-        ],
-        Some(script),
-    );
+    let args = [
+        "submit",
+        "--id",
+        "job-1",
+        "--executor",
+        "sh",
+        "--workdir",
+        "analysis",
+        "--code-file",
+        "-",
+        "--",
+        "alpha",
+        "beta gamma",
+    ];
+    let (code, accepted) = cli(&host.socket, CALLER, &args, Some(script));
     assert_eq!(code, 0, "{accepted}");
     assert_eq!(accepted["value"]["disposition"], "accepted");
     let run_id = accepted["value"]["run"]["run_id"]
@@ -268,25 +271,7 @@ echo done";
     );
 
     // Delivering the same submission again returns the original run.
-    let (code, again) = cli(
-        &host.socket,
-        CALLER,
-        &[
-            "submit",
-            "--id",
-            "job-1",
-            "--executor",
-            "sh",
-            "--workdir",
-            "analysis",
-            "--code-file",
-            "-",
-            "--",
-            "alpha",
-            "beta gamma",
-        ],
-        Some(script),
-    );
+    let (code, again) = cli(&host.socket, CALLER, &args, Some(script));
     assert_eq!(code, 0, "{again}");
     assert_eq!(again["value"]["disposition"], "existing");
     assert_eq!(again["value"]["run"]["run_id"], run_id.as_str());
@@ -306,17 +291,7 @@ fn without_a_host_nothing_is_sent_and_nothing_runs() {
     let state = fixture.state();
     fs::create_dir_all(&state).unwrap();
     let socket = state.join("host.sock");
-    let args = [
-        "submit",
-        "--id",
-        "job",
-        "--executor",
-        "sh",
-        "--workdir",
-        "analysis",
-        "--code",
-        "printf 'x\\n' >> dispatches.txt",
-    ];
+    let args = submit_args("job", "printf 'x\\n' >> dispatches.txt");
     let (code, reply) = cli(&socket, CALLER, &args, None);
     assert_eq!((code, kind(&reply)), (3, "host_unavailable"), "{reply}");
 
@@ -340,23 +315,9 @@ fn concurrent_duplicate_submissions_from_separate_processes_dispatch_once() {
     let code = "printf 'x\\n' >> dispatches.txt; sleep 0.2";
     let clients: Vec<Child> = (0..8)
         .map(|_| {
-            client(
-                &host.socket,
-                CALLER,
-                &[
-                    "submit",
-                    "--id",
-                    "same",
-                    "--executor",
-                    "sh",
-                    "--workdir",
-                    "analysis",
-                    "--code",
-                    code,
-                ],
-            )
-            .spawn()
-            .unwrap()
+            client(&host.socket, CALLER, &submit_args("same", code))
+                .spawn()
+                .unwrap()
         })
         .collect();
     let replies: Vec<Value> = clients
