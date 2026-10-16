@@ -177,6 +177,12 @@ fn reply(output: Output) -> (i32, Value) {
     (code, value)
 }
 
+#[track_caller]
+fn success((code, reply): (i32, Value)) -> Value {
+    assert_eq!(code, 0, "{reply}");
+    reply
+}
+
 fn submit_args<'a>(id: &'a str, code: &'a str) -> [&'a str; 9] {
     [
         "submit",
@@ -230,8 +236,7 @@ echo done";
         "alpha",
         "beta gamma",
     ];
-    let (code, accepted) = cli(&host.socket, CALLER, &args, Some(script));
-    assert_eq!(code, 0, "{accepted}");
+    let accepted = success(cli(&host.socket, CALLER, &args, Some(script)));
     assert_eq!(accepted["value"]["disposition"], "accepted");
     let run_id = accepted["value"]["run"]["run_id"]
         .as_str()
@@ -239,8 +244,7 @@ echo done";
         .to_owned();
 
     // That client has exited; the host still holds the run for later calls.
-    let (code, view) = host.cli(&["lookup", "--id", "job-1"]);
-    assert_eq!(code, 0, "{view}");
+    let view = success(host.cli(&["lookup", "--id", "job-1"]));
     assert_eq!(view["value"]["run_id"], run_id.as_str());
     assert_eq!(view["value"]["held"], true);
     assert!(view["value"]["status"]["Running"].is_object(), "{view}");
@@ -256,8 +260,7 @@ echo done";
     assert_eq!((code, kind(&other)), (1, "not_found"), "{other}");
 
     fixture.release();
-    let (code, done) = host.cli(&["wait", "--id", "job-1", "--timeout", "20"]);
-    assert_eq!(code, 0, "{done}");
+    let done = success(host.cli(&["wait", "--id", "job-1", "--timeout", "20"]));
     assert_eq!(done["value"]["terminal"], true, "{done}");
     assert_eq!(done["value"]["status"]["Finished"]["exit"]["Code"], 0);
     let (_, stdout) = host.cli(&["read", "--id", "job-1"]);
@@ -271,14 +274,12 @@ echo done";
     );
 
     // Delivering the same submission again returns the original run.
-    let (code, again) = cli(&host.socket, CALLER, &args, Some(script));
-    assert_eq!(code, 0, "{again}");
+    let again = success(cli(&host.socket, CALLER, &args, Some(script)));
     assert_eq!(again["value"]["disposition"], "existing");
     assert_eq!(again["value"]["run"]["run_id"], run_id.as_str());
     assert_eq!(fixture.dispatches(), 1);
 
-    let (code, forgotten) = host.cli(&["forget", "--id", "job-1"]);
-    assert_eq!(code, 0, "{forgotten}");
+    success(host.cli(&["forget", "--id", "job-1"]));
     let (code, gone) = host.cli(&["lookup", "--id", "job-1"]);
     assert_eq!((code, kind(&gone)), (1, "not_found"));
     let (code, _) = host.cli(&["submit", "--executor", "sh", "--code", "true"]);
@@ -322,11 +323,7 @@ fn concurrent_duplicate_submissions_from_separate_processes_dispatch_once() {
         .collect();
     let replies: Vec<Value> = clients
         .into_iter()
-        .map(|child| {
-            let (code, reply) = reply(child.wait_with_output().unwrap());
-            assert_eq!(code, 0, "{reply}");
-            reply
-        })
+        .map(|child| success(reply(child.wait_with_output().unwrap())))
         .collect();
     let accepted = replies
         .iter()
@@ -357,12 +354,10 @@ fn cancel_through_the_host_ends_the_run_with_sigterm() {
     // A long grace keeps SIGKILL out of the picture: a run that cannot
     // receive SIGTERM (e.g. an inherited blocked mask) would end by SIGKILL.
     let host = fixture.serve(&["--limit", "stop_grace_ms=10000"]);
-    let (code, accepted) = submit(&host, "job", HOLD);
-    assert_eq!(code, 0, "{accepted}");
+    success(submit(&host, "job", HOLD));
     eventually("dispatch", || fixture.dispatches() == 1);
 
-    let (code, cancelled) = host.cli(&["cancel", "--id", "job"]);
-    assert_eq!(code, 0, "{cancelled}");
+    let cancelled = success(host.cli(&["cancel", "--id", "job"]));
     assert_eq!(cancelled["value"]["cancel"]["reason"], "Caller");
     let (_, done) = host.cli(&["wait", "--id", "job", "--timeout", "20"]);
     let finished = &done["value"]["status"]["Finished"];
@@ -375,8 +370,7 @@ fn cancel_through_the_host_ends_the_run_with_sigterm() {
 fn a_killed_host_restarts_and_finds_its_runs_without_dispatching_again() {
     let fixture = Fixture::new();
     let mut host = fixture.serve(&[]);
-    let (code, accepted) = submit(&host, "job", HOLD);
-    assert_eq!(code, 0, "{accepted}");
+    let accepted = success(submit(&host, "job", HOLD));
     let run_id = accepted["value"]["run"]["run_id"].clone();
     eventually("dispatch", || fixture.dispatches() == 1);
 
@@ -386,16 +380,14 @@ fn a_killed_host_restarts_and_finds_its_runs_without_dispatching_again() {
     assert_eq!((code, kind(&reply)), (3, "host_unavailable"), "{reply}");
 
     let host = fixture.serve(&[]);
-    let (code, view) = host.cli(&["lookup", "--id", "job"]);
-    assert_eq!(code, 0, "{view}");
+    let view = success(host.cli(&["lookup", "--id", "job"]));
     assert_eq!(view["value"]["run_id"], run_id);
     assert_eq!(view["value"]["held"], false);
     assert_eq!(
         view["value"]["status"]["Detached"]["present"], true,
         "{view}"
     );
-    let (code, again) = submit(&host, "job", HOLD);
-    assert_eq!(code, 0, "{again}");
+    let again = success(submit(&host, "job", HOLD));
     assert_eq!(again["value"]["disposition"], "existing");
     assert_eq!(again["value"]["run"]["run_id"], run_id);
     let (code, protected) = host.cli(&["forget", "--id", "job"]);
@@ -406,8 +398,7 @@ fn a_killed_host_restarts_and_finds_its_runs_without_dispatching_again() {
     let gone = &done["value"]["status"]["Gone"];
     assert_eq!(gone["evidence"], "MainPidAbsent", "{done}");
     assert_eq!(gone["group_released"], true);
-    let (code, forgotten) = host.cli(&["forget", "--id", "job"]);
-    assert_eq!(code, 0, "{forgotten}");
+    success(host.cli(&["forget", "--id", "job"]));
     assert_eq!(fixture.dispatches(), 1);
 }
 
@@ -451,8 +442,7 @@ fn a_second_host_cannot_take_over_a_state_dir_in_use() {
     assert!(stderr.contains("in use by another Core"), "{stderr}");
 
     assert!(host.socket.exists(), "the first host's socket is untouched");
-    let (code, reply) = host.cli(&["capability"]);
-    assert_eq!(code, 0, "{reply}");
+    success(host.cli(&["capability"]));
 }
 
 #[test]
@@ -505,8 +495,7 @@ fn oversized_requests_are_refused_before_anything_starts() {
     let answer: Value = serde_json::from_str(&answer).unwrap();
     assert_eq!(kind(&answer), "request_too_large", "{answer}");
 
-    let (code, reply) = host.cli(&["list"]);
-    assert_eq!(code, 0, "{reply}");
+    let reply = success(host.cli(&["list"]));
     assert_eq!(reply["value"]["runs"], Value::Array(Vec::new()));
     assert_eq!(fixture.dispatches(), 0);
 }
@@ -515,8 +504,7 @@ fn oversized_requests_are_refused_before_anything_starts() {
 fn a_full_host_answers_busy_and_a_lost_reply_is_reported_unknown() {
     let fixture = Fixture::new();
     let mut host = fixture.serve(&["--max-connections", "1"]);
-    let (code, accepted) = submit(&host, "job", HOLD);
-    assert_eq!(code, 0, "{accepted}");
+    let accepted = success(submit(&host, "job", HOLD));
     let pid = accepted["value"]["run"]["status"]["Running"]["pid"]
         .as_i64()
         .unwrap_or_else(|| panic!("not running: {accepted}")) as i32;

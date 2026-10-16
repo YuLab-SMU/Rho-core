@@ -261,6 +261,27 @@ fn assert_gone(view: &RunView) {
     );
 }
 
+#[track_caller]
+fn detached(view: &RunView) -> (Option<u32>, bool) {
+    match view.status {
+        RunStatus::Detached { pid, present, .. } => (pid, present),
+        ref status => panic!("expected Detached, got {status:?}"),
+    }
+}
+
+#[track_caller]
+fn main_pid_absent(view: &RunView) -> (Option<u32>, bool) {
+    match view.status {
+        RunStatus::Gone {
+            pid,
+            evidence: AbsenceEvidence::MainPidAbsent,
+            group_released,
+            ..
+        } => (pid, group_released),
+        ref status => panic!("expected Gone/MainPidAbsent, got {status:?}"),
+    }
+}
+
 /// A duplicate after restart finds the original and dispatches nothing,
 /// including when several arrive at once.
 fn duplicates_find_the_original(core: &Core, paths: &Paths) {
@@ -335,18 +356,8 @@ fn crash_after_dispatch_before_spawn_is_reported_as_unknown_start() {
         !view.is_terminal(),
         "an unknown start is not confirmed completion"
     );
-    assert!(
-        matches!(
-            view.status,
-            RunStatus::Detached {
-                pid: None,
-                present: false,
-                ..
-            }
-        ),
-        "{:?}",
-        view.status
-    );
+    let (pid, present) = detached(&view);
+    assert_eq!((pid, present), (None, false));
     duplicates_find_the_original(&core, &ex.paths);
     assert_eq!(ex.paths.dispatches(), 0);
 }
@@ -360,18 +371,8 @@ fn crash_after_spawn_before_it_is_saved_keeps_the_process_detached() {
 
     let core = reopen(&ex.paths);
     let view = core.lookup(CALLER, ID).unwrap();
-    assert!(
-        matches!(
-            view.status,
-            RunStatus::Detached {
-                pid: None,
-                present: true,
-                ..
-            }
-        ),
-        "{:?}",
-        view.status
-    );
+    let (pid, present) = detached(&view);
+    assert_eq!((pid, present), (None, true));
     assert!(!view.is_terminal(), "the task is still running");
     // No Core holds it: cancel records nothing and shutdown leaves it alone.
     assert!(core.cancel(CALLER, ID).unwrap().cancel.is_none());
@@ -383,11 +384,8 @@ fn crash_after_spawn_before_it_is_saved_keeps_the_process_detached() {
         !view.is_terminal(),
         "lock release does not prove native exit"
     );
-    assert!(
-        matches!(view.status, RunStatus::Detached { present: false, .. }),
-        "{:?}",
-        view.status
-    );
+    let (_, present) = detached(&view);
+    assert!(!present, "{:?}", view.status);
     assert_eq!(
         fs::read_to_string(ex.paths.work.join("released.txt")).unwrap(),
         "released:go\n"
@@ -402,12 +400,7 @@ fn host_killed_while_holding_a_run_leaves_it_detached_not_rerun() {
 
     let core = reopen(&ex.paths);
     let view = core.lookup(CALLER, ID).unwrap();
-    let RunStatus::Detached {
-        pid: Some(pid),
-        present: true,
-        ..
-    } = view.status
-    else {
+    let (Some(pid), true) = detached(&view) else {
         panic!("expected a present detached run, got {:?}", view.status);
     };
     assert!(
@@ -424,18 +417,8 @@ fn host_killed_while_holding_a_run_leaves_it_detached_not_rerun() {
     let core = reopen(&ex.paths);
     let view = core.wait(CALLER, ID, PATIENCE).unwrap();
     // Only the absence of its pid is known; no exit status is claimed.
-    assert!(
-        matches!(
-            view.status,
-            RunStatus::Gone {
-                pid: Some(gone),
-                evidence: AbsenceEvidence::MainPidAbsent,
-                ..
-            } if gone == pid
-        ),
-        "{:?}",
-        view.status
-    );
+    let (gone_pid, _) = main_pid_absent(&view);
+    assert_eq!(gone_pid, Some(pid));
     assert_eq!(ex.paths.dispatches(), 1);
 }
 
@@ -477,19 +460,8 @@ fn a_detached_run_that_ended_can_be_forgotten_to_recover_capacity() {
     wait_pid_absent(pid as i32);
     let view = core.wait(CALLER, ID, PATIENCE).unwrap();
     assert!(view.is_terminal(), "{:?}", view.status);
-    assert!(
-        matches!(
-            view.status,
-            RunStatus::Gone {
-                pid: Some(gone),
-                evidence: AbsenceEvidence::MainPidAbsent,
-                group_released: true,
-                ..
-            } if gone == pid
-        ),
-        "{:?}",
-        view.status
-    );
+    let (gone_pid, group_released) = main_pid_absent(&view);
+    assert_eq!((gone_pid, group_released), (Some(pid), true));
     assert!(matches!(
         view.operation.execution,
         Knowledge::Known {
@@ -567,8 +539,9 @@ fn a_changed_local_boot_view_does_not_prove_a_live_run_gone() {
     ex.paths.open_gate();
     wait_pid_absent(pid);
 
+    let (pid, _) = detached(&view);
     assert!(
-        matches!(view.status, RunStatus::Detached { pid: Some(_), .. }),
+        pid.is_some(),
         "a changed view cannot prove this live process gone: {:?}",
         view.status
     );
@@ -595,7 +568,8 @@ fn only_a_changed_kernel_boot_proves_a_run_gone_without_a_pid() {
     let core = reopen(&ex.paths);
     let view = core.lookup(CALLER, ID).unwrap();
     if scope == Some(BootIdScope::LocalView) {
-        assert!(matches!(view.status, RunStatus::Detached { pid: None, .. }));
+        let (pid, _) = detached(&view);
+        assert_eq!(pid, None);
         assert_ne!(view.operation.group_released.value(), Some(&true));
         duplicates_find_the_original(&core, &ex.paths);
         assert_forget_protected(&core);
@@ -643,11 +617,8 @@ fn pids_prove_nothing_without_the_dispatch_process_context() {
     let undecided = |paths: &Paths| {
         let core = reopen(paths);
         let view = core.lookup(CALLER, ID).unwrap();
-        assert!(
-            matches!(view.status, RunStatus::Detached { pid: Some(_), .. }),
-            "{:?}",
-            view.status
-        );
+        let (pid, _) = detached(&view);
+        assert!(pid.is_some(), "{:?}", view.status);
         assert_ne!(view.operation.group_released.value(), Some(&true));
         assert_forget_protected(&core);
     };
@@ -673,14 +644,8 @@ fn pids_prove_nothing_without_the_dispatch_process_context() {
 
     edit_dispatch_context(&ex.paths, |context| *context = Some(recorded));
     let core = reopen(&ex.paths);
-    assert!(matches!(
-        core.lookup(CALLER, ID).unwrap().status,
-        RunStatus::Gone {
-            evidence: AbsenceEvidence::MainPidAbsent,
-            group_released: true,
-            ..
-        }
-    ));
+    let (_, group_released) = main_pid_absent(&core.lookup(CALLER, ID).unwrap());
+    assert!(group_released);
     core.forget(CALLER, ID).unwrap();
     assert_eq!(ex.paths.dispatches(), 1);
 }
@@ -706,18 +671,8 @@ fn a_group_member_that_outlives_the_main_process_keeps_the_record() {
     ex.paths.open_gate();
     wait_pid_absent(pid as i32);
     let view = core.wait(CALLER, ID, PATIENCE).unwrap();
-    assert!(
-        matches!(
-            view.status,
-            RunStatus::Gone {
-                evidence: AbsenceEvidence::MainPidAbsent,
-                group_released: false,
-                ..
-            }
-        ),
-        "{:?}",
-        view.status
-    );
+    let (_, group_released) = main_pid_absent(&view);
+    assert!(!group_released, "{:?}", view.status);
     assert!(matches!(
         view.operation.retention,
         RetentionState::Protected { .. }
@@ -775,17 +730,7 @@ fn closing_inherited_stdin_does_not_confirm_exit_after_host_crash() {
     // The end of the process, not of its lock, is what is observed.
     wait_pid_absent(pid);
     let view = core.wait(CALLER, ID, PATIENCE).unwrap();
-    assert!(
-        matches!(
-            view.status,
-            RunStatus::Gone {
-                evidence: AbsenceEvidence::MainPidAbsent,
-                ..
-            }
-        ),
-        "{:?}",
-        view.status
-    );
+    main_pid_absent(&view);
 }
 
 #[test]
@@ -800,18 +745,8 @@ fn crash_after_exit_before_the_outcome_is_saved_keeps_retained_output() {
     let view = core.lookup(CALLER, ID).unwrap();
     // The exit status was observed only by the dead host, so it is not
     // claimed; the reaped pid is observed absent.
-    assert!(
-        matches!(
-            view.status,
-            RunStatus::Gone {
-                pid: Some(_),
-                evidence: AbsenceEvidence::MainPidAbsent,
-                ..
-            }
-        ),
-        "{:?}",
-        view.status
-    );
+    let (pid, _) = main_pid_absent(&view);
+    assert!(pid.is_some(), "{:?}", view.status);
     assert_eq!(stdout(&core, 1024), b"released:go\n");
     duplicates_find_the_original(&core, &ex.paths);
     assert_eq!(ex.paths.dispatches(), 1);
@@ -945,11 +880,8 @@ fn a_saved_cancel_survives_a_crash_but_is_not_reported_as_a_stop() {
         "no signal was sent before the crash"
     );
     // The task may still be running; nothing claims it stopped.
-    assert!(
-        matches!(view.status, RunStatus::Detached { present: true, .. }),
-        "{:?}",
-        view.status
-    );
+    let (_, present) = detached(&view);
+    assert!(present, "{:?}", view.status);
     ex.paths.open_gate();
     let view = core.wait(CALLER, ID, PATIENCE).unwrap();
     // Its end is observed, but not as the effect of a stop signal.
