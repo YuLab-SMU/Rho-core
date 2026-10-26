@@ -44,7 +44,7 @@ SQLite 对 `(scope_id, caller_id, request_id)` 加唯一约束；代码、目录
 
 ## 存储与事务边界
 
-`OperationStore` 是当前流程的一种具体 SQLite 实现，不预建多后端接口、调度器或恢复引擎。
+`OperationStore` 是当前唯一的具体实现（SQLite），没有多后端接口、调度器或恢复引擎；结果证明需要时再加。
 
 - `store_info` 保存格式版本、项目根字节和 scope；已有空/损坏/其他格式数据库不初始化成空库。
 - `operations` 保存不可变受理和每个独立事实；`artifacts` 保存脚本及每路输出的摘要、长度和连续偏移。
@@ -63,10 +63,9 @@ SQLite 配置为 WAL、FULL 同步，并启用 macOS 的 fullfsync。当前锁�
 [官方 WAL 文档](https://www.sqlite.org/wal.html) 与
 [synchronous 说明](https://www.sqlite.org/pragma.html#pragma_synchronous) 定义数据库保证；
 数据库事务不包含原生副作用，也不恢复已经丢失的原生句柄。物理断电仍需单独实验。
-开发状态可在格式变更时清除重建；只维护当前 SQLite 格式，不建立旧格式识别、保留或迁移机制。
 当前格式为 4，新增上述外部活动表。`ProcessContext.boot_id_scope` 仍是必需字段，没有
-推断默认值；旧格式打开时拒绝且原数据不改写，不补造来源或迁移记录。使用明确选择的
-新开发存储；新实现未安装到用户现有 Host。
+推断默认值；旧格式打开时拒绝且原数据不改写，不补造来源或迁移记录。目前只支持当前格式，
+开发期的旧状态删除后重建；需要保留真实用户的存储时再加迁移。
 
 ## 单调更新与可验证行为
 
@@ -84,7 +83,7 @@ SQLite 配置为 WAL、FULL 同步，并启用 macOS 的 fullfsync。当前锁�
 错误与定向事务失败。注入存储事实覆盖来源范围比较与删除保护；Linux 另用真实 `/proc` 视图和
 PID 命名空间切换验证仍存活任务的保护，并通过整个 OrbStack 后端正常停止、启动观察真实
 `BootChanged`。局部标识夹具仍保持未知；两类夹具的重复请求都只返回原运行、派发计数保持 1。
-macOS 与 Linux 的完整 73 项 Cargo 回归及受管运行示例均通过。回归入口为
+受管运行的回归与示例已在 macOS 与 Linux 通过；活动表目前只在 macOS 验证。回归入口为
 [managed_run](../tests/managed_run.rs)、[restart](../tests/restart.rs)、[storage](../tests/storage.rs)、
 存储单元检查与 [Linux 平台实验](../tests/linux_platform.py)；实测记录见
 [Linux 验证记录](work/CORE-20261011-03.md)。

@@ -199,8 +199,8 @@ RFC 3339、精确到毫秒。`read` 返回 `text`、`offset`、`next_offset`、`
 提交只受理与派发一次，内容不同为冲突；经宿主取消以 SIGTERM 结束且未发 SIGKILL；宿主 SIGKILL 后
 重启找回 `Detached`、重复提交为 `Existing`、任务结束后为 `Gone` 并可删除；宿主 SIGTERM 后运行停止、
 套接字删除；第二个宿主被拒且不影响第一个；超限请求在 Core、客户端与宿主三处被拒；连接占满时回答
-`busy`，宿主在回复前被杀时客户端报告 `reply_unknown`。这套回归已在 macOS 与 Linux 上运行，
-各平台格式、Clippy、完整 73 项 Cargo 回归与受管运行示例均通过。
+`busy`，宿主在回复前被杀时客户端报告 `reply_unknown`。这套回归已在 macOS 与 Linux 上通过；
+活动命令目前只在 macOS 验证，各平台的实际范围见[进度](PROGRESS.md#已验证的范围)。
 
 [`tests/linux_platform.py`](../tests/linux_platform.py) 在 OrbStack Ubuntu 25.04 另行验证了跨 UID 拒绝、
 局部启动标识变化、`LocalView` 到 `Kernel` 的来源变化，以及同内核下的 PID 命名空间变化。

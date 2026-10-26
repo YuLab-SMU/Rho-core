@@ -1,11 +1,11 @@
 # Rho Core security boundary
 
-`main` contains the rebuild design and the first managed flow, a Unix-only Rust
-library whose behavior is specified in the [managed-run contract](docs/MANAGED-RUN.md).
-The former implementation and its assumptions remain on
-`codex/legacy-core-before-rebuild`. This document states requirements; only the
-behavior described in that contract and exercised by its regressions is implemented.
-Responsibilities are defined in [Architecture](docs/ARCHITECTURE.md).
+Rho Core is a Unix-only Rust library and `rho-core` binary. Its implemented behavior
+is specified in the [managed-run](docs/MANAGED-RUN.md), [Host and CLI](docs/HOST-CLI.md)
+and [activity](docs/ACTIVITY.md) contracts; only behavior described there and
+exercised by regressions is implemented. This document states the security boundary.
+Responsibilities are defined in [Architecture](docs/ARCHITECTURE.md). The former
+implementation and its assumptions remain on `codex/legacy-core-before-rebuild`.
 
 The first selected deployment is a trusted, single-user local project. Core
 enforces the request identity, object association and access scope of its own
@@ -41,6 +41,11 @@ setting, not authentication. The library opens no network listener. The
 directory and refuses peers whose uid differs from its own; any process of that
 user may still use any caller name. See [Host and CLI](docs/HOST-CLI.md).
 
+Activity observations are inert data. Core stores the events an adapter sends but
+never executes their content or treats it as instructions, and a path in source
+metadata grants no resource access. Receiving an event gives Core no control over
+the external action.
+
 Remote sharing, multi-user policies and stronger isolation need concrete
 requirements and verification, rather than a general security framework or a
 model's judgment.
@@ -52,8 +57,8 @@ Build/test jobs cannot deploy or replace a user's runtime as an incidental step.
 Agent-generated changes follow the same scoped review and verification process as
 other changes; a suggested repair cannot expand execution authority or replay an
 uncertain native action. There is no blanket extra approval for writes or network
-access already authorized in the selected environment. See the
-[engineering guide](docs/ENGINEERING.md) for regression and delivery boundaries.
+access already authorized in the selected environment. See
+[Engineering](docs/ENGINEERING.md#检查) for checks and delivery.
 
 For suspected vulnerabilities, use
 [private vulnerability reporting](https://github.com/YuLab-SMU/Rho/security/advisories/new).

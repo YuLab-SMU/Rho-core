@@ -1,13 +1,13 @@
 # Rho Core data handling
 
-Design baseline: 2026-10-10. `main` contains the first managed flow; its data
-handling is listed below and in the [managed-run contract](docs/MANAGED-RUN.md). The
-old policy remains with its archived source. The other requirements here must be
-implemented and verified as the corresponding capabilities are introduced.
+This document describes how Rho Core handles data. Implemented behavior is listed
+below and in the [managed-run](docs/MANAGED-RUN.md) and [activity](docs/ACTIVITY.md)
+contracts. The old policy remains with its archived source.
 
-Core retains data only for the selected managed guarantees: request identities
-and scope, actual arguments and targets, execution-owner associations, native
-handles, known results or result references, and necessary diagnostics. Arguments
+Core retains data only for its selected guarantees. For managed runs these are
+request identities and scope, actual arguments and targets, execution-owner
+associations, native handles, known results or result references, and necessary
+diagnostics; for activity observations, the events an adapter chooses to send. Arguments
 and output may contain code, private data or program-printed credentials; bounded
 storage does not imply automatic redaction. Exact bytes are retained only for an
 identified continuation or review need. Ordinary reads do not create a query
@@ -41,8 +41,7 @@ callers' data or unlimited history. Diagnostic logs reference these facts rather
 than copying full arguments or outputs by default. Observation timestamps and
 native event times remain distinct; unknown provenance is not invented. Any
 optional metric or trace export declares its content, destination, access and
-retention before use. The [engineering guide](docs/ENGINEERING.md) defines the
-minimum fact and validation checklist, without selecting a telemetry service.
+retention before use.
 
 The selected managed flow retains accepted requests and independent facts across
 Core lifetimes in `state_dir/core.sqlite3`, including SQLite's WAL while present.
@@ -57,6 +56,16 @@ in-memory output. Logical deletion is not secure erasure of database pages, WAL,
 filesystem blocks or backup copies. The library sends no telemetry and contacts
 no network service. Only the current SQLite format is maintained; obsolete
 development fixtures are disposable when changing storage formats.
+
+Activity observations are stored in the same `core.sqlite3`: each stream's
+immutable source metadata and, for each received event, its content and receipt
+time. Adapters choose which native fields to send, redact credentials and omit hidden
+reasoning; Core does not redact event content. Retention is bounded per stream and
+per project ([activity contract](docs/ACTIVITY.md#reading-and-retention)): the oldest
+events are evicted and reads report the gap. `forget_activity` removes a stream and
+its retained events in one transaction while the expected cursor still matches. This
+ends duplicate protection for that stream and, like other logical deletion, is not
+secure erasure. Core never executes event content.
 
 Check delivered behavior before describing it as implemented. Execution and
 deployment limits are in [SECURITY](SECURITY.md).

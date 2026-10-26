@@ -1,104 +1,82 @@
-# Working on the Rho Core rebuild
+# Working on Rho Core
 
-`main` is the starting point for a new Core. The former implementation is retained
-on `codex/legacy-core-before-rebuild`. Read [README](README.md),
-[Mission and plan](docs/MISSION-AND-PLAN.md), [Architecture](docs/ARCHITECTURE.md)
-and [Rebuild workflow](docs/REBUILD.md) before selecting work. These documents define
-target behavior. Implemented behavior includes the first managed flow in the
-[managed-run contract](docs/MANAGED-RUN.md) and selected external
-[activity observations](docs/ACTIVITY.md), each within its documented retention
-and restart scope. Observing an external action does not make it a managed run.
+Rho Core supplies managed local execution for Agents and retains selected external
+Agent activity. Read [README](README.md), [Architecture](docs/ARCHITECTURE.md),
+[Engineering](docs/ENGINEERING.md) and [Progress](docs/PROGRESS.md) before selecting
+work. The contracts describe what is built: [managed runs](docs/MANAGED-RUN.md),
+[information model](docs/INFORMATION-MODEL.md), [Host and CLI](docs/HOST-CLI.md) and
+[activity observations](docs/ACTIVITY.md). Observing an external action does not make
+it a managed run.
 
-Use [Engineering guide](docs/ENGINEERING.md) to select each flow, describe its
-contract, expose necessary facts and scope regression checks. The architecture's
-core principles govern expansion; this guide does not authorize a new framework.
+## Fixed boundaries
 
-Read [Engineering progress](docs/PROGRESS.md) when selecting or resuming work.
-Maintain one selected-task record under docs/work/ using the
-[recording rules](docs/ENGINEERING-MONITORING.md). Record meaningful work, actual
-timestamps, duration coverage and verification; historical commit times do not
-establish work duration. Update the task and current summary at checkpoints and
-closure, without introducing a runtime monitoring subsystem or automatic follow-up.
+These protect callers' work and the truth of what is reported. They are not open to
+experiment; the reasons are in [Architecture](docs/ARCHITECTURE.md#固定的边界).
 
-## Scope and design
+- Core owns its programmatic boundary, the runs it accepts and the activity it
+  receives. Protocol edges, Rho-plugins and the Rho application depend on Core; Core
+  does not depend on protocol types, client behavior, plugins, models or sibling
+  sources. Agents may use existing CLIs, SDKs and MCP servers directly; nothing has
+  to be registered or wrapped as a Rho plugin. Domain semantics stay with their owners.
+- Callers hold request identities. A duplicate, including a concurrent one, returns
+  the original acceptance; changed content under the same identity is refused. A
+  lost reply, timeout, restart or unreadable record never authorizes replay or a
+  new identity.
+- Acceptance, dispatch, native effects, retained output, cancellation, confirmed stop
+  and release are separate facts. Unknown stays unknown, with its basis. Script
+  composition is not a transaction; cancellation is not rollback.
+- Guarantees cover only what Core accepted, within the stated process lifetime,
+  retention and platforms. External actions never acquire Core acceptance,
+  deduplication or causal history.
+- Core checks its own identity and scope, including on direct calls; native owners
+  check changing preconditions where the operation happens. Model output and
+  adapters cannot expand authority. Already authorized work gets no extra Rho
+  approval. Path containment is not a sandbox.
+- Reads are bounded observations and never start or recover a runtime.
+- Every resource Core holds is bounded: name the protected resource, default,
+  configuration and exceeded-limit behavior. Never truncate silently.
 
-- This repository owns Core's programmatic boundary and the selected managed
-  execution and continuation guarantees. Optional protocol adapters depend on
-  Core; Core must not depend on protocol types or client-specific behavior.
-  Logical separation does not require separate repositories, services or crates.
-- Agent harnesses read documentation, select tools, compose code and manage model
-  context. They may use existing CLIs, SDKs and MCP servers directly. Do not require
-  every external capability to be registered, proxied or packaged as a Rho plugin.
-  Domain and native semantics remain with their actual owners.
-- Start with a concrete caller action and observable completion conditions. Try
-  maintained tools first and identify the managed guarantee they cannot provide.
-  Uniform naming, a common catalog or possible future consumers do not justify
-  adding a subsystem. Old APIs, tests, SDKs and formats are not requirements.
-- Core describes its own capabilities, with documentation and examples available
-  on demand. Do not predefine an endpoint for each scientific method, require a
-  discovery pipeline or force every native result into one universal model.
-  Compare focused tools and code composition on actual tasks.
-- Reuse ordinary functions, files, Git, maintained libraries and native execution
-  handles. Add shared mechanisms for a demonstrated gap, not an arbitrary count
-  of flows. Do not recreate a capability already supplied by the execution owner.
-- Scope every guarantee to the managed actions, process lifetime and retention
-  actually covered. External actions may be observed later; never synthesize Core
-  acceptance, deduplication or causal history for them.
-- Native owners check changing object identities and preconditions at the actual
-  operation boundary. Core enforces its own request identity and access scope,
-  including direct calls. Model output and another adapter cannot expand either.
-  A lost reply does not authorize replay. Script composition does not imply a
-  transaction or permission to rerun partially executed code.
-- Return known results and limitations honestly. Current reads are not historical
-  inputs. Cancellation, confirmation, release and rollback remain distinct.
-  Retain only information needed by selected continuation or effect guarantees;
-  ordinary reads do not require logging or restarting a runtime.
-- First deliver a trusted single-user local flow without another Rho approval for
-  already authorized work. Authentication and transport limits belong to the
-  selected edge; native and Core checks still apply. Isolation belongs to the
-  actual execution environment. Path validation is not an OS sandbox.
-- Bound resources actually owned by the implementation: identify the protected
-  resource, default, configuration and exhaustion behavior. Include processes
-  started or held by Core. Avoid unbounded queues, silent truncation and a global
-  quota or monitoring system for the Agent's entire environment.
+## How work advances
 
-## Implementation and verification
+Work advances from results, not from rules written ahead of them
+([Engineering](docs/ENGINEERING.md)). Start from a real caller's action, do it first
+with the existing tools and name the gap Core would close. Make the smallest change
+in the actual owner, run the real case on disposable resources, look at the actual
+result (dispatch counts, bytes, records, the Agent's actions), find the cause in its
+owner and run the same case again. Explore quickly while a question is open. A
+guarantee is claimed only after fault experiments that cover it; regression tests
+harden what results have confirmed. API shapes, storage layout, limit values,
+internal mechanisms, test organization and process stay open and change when a
+reviewed result calls for it. Do not write interfaces, checklists, stage plans or
+prohibitions for capabilities that no real caller has exercised.
 
-Inspect Git status and preserve unrelated changes. Add new source on `main` in
-small milestones. Consult the archive only for a concrete requirement or failure;
-do not copy its subsystem map or revive a compatibility layer. Use fresh projects
-and storage. Do not migrate or export legacy catalogs as part of this rebuild.
+## Verification
 
-Core must build and be testable without Rho or Rho-plugins source or an embedded
-model. Use a minimal native-execution fixture through the programmatic boundary;
-scientific results require the real owner in a separately selected integration.
-Protocol servers, a provider framework and an exported SDK are not milestone
-requirements without a real consumer. Do not update sibling repositories, SDK
-snapshots or application locks to close a Core milestone.
+- Run the [README](README.md#构建与检查) commands in sequence; never run Cargo
+  builds/tests concurrently. Core checks need no model credentials, sibling sources
+  or user runtime. Only executed checks count, each for its recorded scope.
+- Reproduce a failure before fixing it and keep a focused regression. Never delete
+  failures, change pass criteria or rerun until green.
+- Use disposable projects, state directories and owned Hosts. Never start or restart
+  a user's Host or R session for verification.
+- Documentation changes need local link/anchor checks and rendered inspection of the
+  changed pages. `docs/MANAGED-RUN.md` and `docs/ACTIVITY.md` are compiled into the
+  binary, so changing them also needs the Cargo checks.
+- CI is deferred by the user's decision of 2026-10-10 until the user selects it.
 
-Run focused behavior checks; never run Cargo builds/tests concurrently. Report
-only checks actually executed. Documentation changes need local link/anchor checks
-and rendered inspection. Never start or restart a user's Host or R session for
-verification. Old binaries and old passing tests do not verify the new Core.
+## Records and delivery
 
-Deliver callable examples and necessary fact retrieval with each selected flow.
-Concurrent duplicate requests must be covered by behavior checks, not just a
-sequential retry. Reproduce actual failures before fixing them and retain focused
-regressions. Distinguish accepted requests, native effects and result retention;
-missing or unreadable records never authorize replay. Use process-lifetime claims
-until restart guarantees are implemented and tested.
-
-Do not add CI until the user selects it; it was deferred on 2026-10-10. Verify
-with the reproducible local commands in [README](README.md#构建与检查). Core
-checks must not require model credentials, sibling sources or a user runtime.
-Agent evaluation, protocol integration and native acceptance have separate owners
-and triggers. Diagnostics are scoped and bounded; do not collect hidden reasoning,
-all external actions or raw request/output content by default. Agent-authored
-repairs and contract changes use the normal verified change process, without
-implicit deploys.
-
-Commit coherent work. Keep design documents on `main`; archive source stays on its
-branch. Creating the archive or committing locally does not publish it. Before an
-authorized push, inspect the actual remote, branch and account and verify the
-remote head afterward. Do not change sibling source, publish a release or install
-an artifact as a side effect of this repository's work.
+- Keep one record per selected task under `docs/work/` and the current summary in
+  [Progress](docs/PROGRESS.md), as described in
+  [Engineering](docs/ENGINEERING.md#记录). Use actual clock times; unknown durations
+  stay unknown.
+- Inspect Git status and preserve unrelated changes. Commit coherent work on `main`.
+  Before an authorized push, inspect the actual remote, branch and account, and
+  verify the remote head afterward. Changing sibling repositories, publishing a
+  release, installing a binary or replacing a user's Host is never a side effect of
+  work here.
+- The legacy implementation is on `codex/legacy-core-before-rebuild`; consult it for
+  a concrete requirement or failure. Its APIs, tests and formats are not requirements,
+  and ignored legacy `crates/`, `sdk/` or `target/` contents are not evidence.
+- Keep credentials and private material out of source, records and diagnostics. Do
+  not collect hidden reasoning, or all external actions, by default.

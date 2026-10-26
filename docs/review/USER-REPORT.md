@@ -3,7 +3,8 @@
 用户提供的设计审核输入，保存于 2026-10-09。下方是阅读副本，仅整理行尾空格并
 修正 Mermaid 标签的引号与换行语法；[原始文本](USER-REPORT.txt)逐字节保留。报告未逐条核实，
 其中关于当前实现、研究效果、性能和安全的主张不自动成为本项目事实。
-项目采用与修正的判断见 [审核报告取舍](../AUDIT-DECISIONS.md)。
+项目当时采用与修正的判断见 [审核报告取舍](https://github.com/YuLab-SMU/Rho-core/blob/f7965d2/docs/AUDIT-DECISIONS.md)（2026-10-25 撤回，Git 保留）；现行边界见
+[架构](../ARCHITECTURE.md#固定的边界)。
 
 ---
 
