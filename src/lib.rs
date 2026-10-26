@@ -14,6 +14,7 @@
 #[cfg(not(unix))]
 compile_error!("rho-core currently supports Unix platforms only");
 
+mod activity;
 mod error;
 mod fault;
 mod os;
@@ -31,6 +32,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
+pub use activity::{
+    ACTIVITY_CONTRACT, ActivityEntry, ActivityError, ActivityEvent, ActivityLimits, ActivityPage,
+    ActivityReceipt, ActivitySource, ActivityStream,
+};
 pub use error::{ForgetError, LookupError, OpenError, ReadError, SubmitError, WorkdirProblem};
 pub use record::{
     AbsenceEvidence, BlobRef, BootIdScope, DispatchFact, ExecutionFact, FactSource, Knowledge,
@@ -80,6 +85,7 @@ impl Executor {
 /// Bounds on resources Core owns. Exceeding one rejects or limits explicitly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Limits {
+    pub activity: ActivityLimits,
     /// Processes held at once; a new request beyond it is rejected, not queued.
     pub max_running: usize,
     /// Accepted request records kept in the state dir, including those of
@@ -104,6 +110,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            activity: ActivityLimits::default(),
             max_running: 4,
             max_records: 256,
             max_code_bytes: 1 << 20,
@@ -235,6 +242,7 @@ impl Core {
             )));
         }
         check_limits(&config.limits).map_err(error)?;
+        config.limits.activity.validate().map_err(error)?;
         let mut executors = HashMap::new();
         for executor in config.executors {
             check_identity("executor name", &executor.name).map_err(error)?;

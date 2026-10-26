@@ -97,7 +97,7 @@ fn a_store_without_boot_identity_scope_is_rejected_without_migration() {
         core,
         db,
     } = fx;
-    assert_eq!(scalar::<i64>(&db, "SELECT format FROM store_info"), 3);
+    assert_eq!(scalar::<i64>(&db, "SELECT format FROM store_info"), 4);
     let dispatch: String = scalar(&db, "SELECT dispatch FROM operations");
     let mut old: serde_json::Value = serde_json::from_str(&dispatch).unwrap();
     old["Known"]["value"]["Attempted"]["context"]

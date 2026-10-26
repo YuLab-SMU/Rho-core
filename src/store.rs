@@ -1,6 +1,8 @@
 //! SQLite owns acceptance and each independent fact transaction. Immutable,
 //! bounded blobs are synced before a transaction references them.
 
+mod activity;
+
 use std::collections::HashSet;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -24,7 +26,7 @@ use crate::{RequestInfo, StreamInfo, fault};
 pub(crate) const DATABASE: &str = "core.sqlite3";
 pub(crate) const RUN_LOCK: &str = "run.lock";
 const STORE_LOCK: &str = "store.lock";
-const FORMAT: i64 = 3;
+const FORMAT: i64 = 4;
 const LOCK_PATIENCE: Duration = Duration::from_millis(500);
 pub(crate) const BLOB_CHUNK: usize = 64 * 1024;
 
@@ -248,6 +250,7 @@ impl OperationStore {
                     kind TEXT NOT NULL CHECK(kind IN ('script','stdout','stderr')), offset INTEGER NOT NULL CHECK(offset>=0),
                     digest TEXT NOT NULL, bytes INTEGER NOT NULL CHECK(bytes>=0), PRIMARY KEY(operation_id,kind,offset));")?;
             let scope = crate::hex(&Sha256::digest(dir.as_os_str().as_encoded_bytes()));
+            tx.execute_batch(activity::SCHEMA)?;
             tx.execute(
                 "INSERT INTO store_info VALUES (1,?1,?2,?3)",
                 params![FORMAT, project_root.as_os_str().as_encoded_bytes(), scope],

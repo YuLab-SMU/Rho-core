@@ -4,8 +4,10 @@
 on `codex/legacy-core-before-rebuild`. Read [README](README.md),
 [Mission and plan](docs/MISSION-AND-PLAN.md), [Architecture](docs/ARCHITECTURE.md)
 and [Rebuild workflow](docs/REBUILD.md) before selecting work. These documents define
-target behavior. Implemented behavior is limited to the first managed flow in the
-[managed-run contract](docs/MANAGED-RUN.md), including its documented durable acceptance and restart scope.
+target behavior. Implemented behavior includes the first managed flow in the
+[managed-run contract](docs/MANAGED-RUN.md) and selected external
+[activity observations](docs/ACTIVITY.md), each within its documented retention
+and restart scope. Observing an external action does not make it a managed run.
 
 Use [Engineering guide](docs/ENGINEERING.md) to select each flow, describe its
 contract, expose necessary facts and scope regression checks. The architecture's

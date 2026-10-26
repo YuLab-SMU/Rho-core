@@ -15,7 +15,7 @@ const USAGE: &str = "\
 rho-core: a host that holds managed runs for one project, and a client for it.
 
 Start the host (stays in the foreground; SIGTERM or Ctrl-C stops it and its runs):
-  rho-core serve --project DIR --state-dir DIR --executor NAME=/absolute/program
+  rho-core serve --project DIR --state-dir DIR [--executor NAME=/absolute/program]
                  [--executor-arg NAME=ARG]... [--limit NAME=VALUE]... [--max-connections N]
   When ready it prints one JSON line with the socket path.
 
@@ -29,6 +29,14 @@ Client commands (one request each; the reply is one JSON line on stdout):
   rho-core cancel --id ID
   rho-core forget --id ID
   rho-core capability [--contract]
+  rho-core activity-open --source-file PATH|-     (immutable JSON source selection)
+  rho-core activity-append --id STREAM --events-file PATH|-  (JSON event array)
+  rho-core activity-read --id STREAM [--after N] [--limit N] [--max-bytes N]
+  rho-core activity-list
+  rho-core activity-forget --id STREAM --expected-cursor N
+
+An observation-only host may omit --executor. Activity commands retain external
+observations; they never execute their content. See docs/ACTIVITY.md.
 
 Client commands need --socket PATH (or RHO_CORE_SOCKET); all but capability also
 need --caller NAME (or RHO_CORE_CALLER). IDs and callers are 1-128 characters of

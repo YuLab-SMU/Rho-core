@@ -9,7 +9,7 @@ use std::io::{self, BufRead, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use rho_core::Limits;
+use rho_core::{ActivityEvent, ActivitySource, Limits};
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL: u64 = 1;
@@ -52,6 +52,30 @@ pub enum Request {
     Capability {
         #[serde(default)]
         contract: bool,
+    },
+    ActivityOpen {
+        caller: String,
+        source: ActivitySource,
+    },
+    ActivityAppend {
+        caller: String,
+        stream: String,
+        events: Vec<ActivityEvent>,
+    },
+    ActivityRead {
+        caller: String,
+        stream: String,
+        after: u64,
+        max_events: usize,
+        max_bytes: usize,
+    },
+    ActivityList {
+        caller: String,
+    },
+    ActivityForget {
+        caller: String,
+        stream: String,
+        expected_cursor: u64,
     },
     Submit {
         caller: String,
@@ -101,6 +125,12 @@ pub fn max_request_bytes(limits: &Limits) -> usize {
         .saturating_mul(6)
         .saturating_add(limits.max_args.saturating_mul(3))
         .saturating_add(REQUEST_OVERHEAD)
+        .max(
+            limits
+                .activity
+                .max_batch_bytes
+                .saturating_add(REQUEST_OVERHEAD),
+        )
 }
 
 pub enum Line {

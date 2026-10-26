@@ -1,9 +1,15 @@
 # Rho Core
 
 Rho Core 为 Agent 工作环境补足需要管理的本地执行：定位选定对象、持有持续动作、
-保护约定范围的重复送达，并找回结果。Agent 在自己的环境中阅读文档、编写与组合
+保护约定范围的重复送达，并找回结果；同时保留选定 Agent 的关键活动，供重新读取和后处理。Agent 在自己的环境中阅读文档、编写与组合
 代码、直接使用已有 CLI、SDK 和 MCP；只有存在明确执行缺口的动作才进入 Core。
 模型循环、协议兼容与科研方法由各自的 Owner 承担。
+
+2026-10-25 新增独立的活动流：采集器把原生工具请求、返回和进程结果送入 Core，Core
+保留来源身份、连续游标和有界事件；重复送达不重复登记，重启后可以续读，淘汰明确报告缺口。
+Claude Code 与 dsh 的原生日志读取和派生摘要在 Rho-plugins，使用 Core 公共 CLI。
+已完成两种客户端的真实试用、运行中接入、采集器中断和测试 Host 重启；详见
+[本轮记录](docs/work/CORE-20261025-01.md)。活动记录不赋予 Core 对外部执行的控制权。
 
 本仓库已选择从零重建。`main` 包含设计与开发规则，以及首个受管流程的 Rust 库
 `rho-core`：仅支持 Unix；受理与独立执行事实使用 SQLite 事务持久保存，脚本和输出为内容寻址文件，
@@ -16,6 +22,7 @@ Rho Core 为 Agent 工作环境补足需要管理的本地执行：定位选定�
 | --- | --- |
 | [信息模型与存储不变量](docs/INFORMATION-MODEL.md) | 请求键、操作身份、独立事实、事务边界、单调更新与删除保护 |
 | [受管运行契约](docs/MANAGED-RUN.md) | 调用方法、身份与去重、持有与停止、限额、存储与重启、不提供的保证 |
+| [活动观测契约](docs/ACTIVITY.md) | 外部来源身份、事务追加、去重、保留缺口、游标续读；不启动 Agent 或工具 |
 | [本地宿主与 CLI](docs/HOST-CLI.md) | Agent 跨调用提交、等待、读输出与取消；退出码、宿主限额与故障语义 |
 | [插件仓 Agent 评估](../Rho-plugins/plugins/agent-eval/core-agent/README.md) | 指定 Magpie/WestlakeHPC 模型使用 Core 的独立评估；真实夹具、事实评分与重复试验 |
 | [可独立核验的分析试点](examples/scientific-pilot/README.md) | 真实 Iris 精确置换检验、独立数学 oracle、公开 CLI 接续与取消 |
@@ -51,7 +58,7 @@ Core 从零重建与此前四方向任务只修改 Rho-core。此前另行选定
 [`tests/storage.rs`](tests/storage.rs)，宿主与 CLI 的跨进程回归见 [`tests/host.rs`](tests/host.rs)；各平台的实际验证范围见
 [进度总览](docs/PROGRESS.md)。后续流程仍先复用实际工具确认缺口，不以重新建设文件
 读取、统一工具目录或协议框架为起点。模型、协议和领域集成各自在真实消费者出现后
-验证；没有观测服务。
+验证。外部 Agent 活动的采集与保留范围见[活动观测契约](docs/ACTIVITY.md)。
 
 许可证见 [LICENSE](LICENSE)。新实现的执行边界与数据处理要求分别见
 [SECURITY](SECURITY.md) 和 [PRIVACY](PRIVACY.md)。
@@ -88,7 +95,7 @@ sudo python3 tests/linux_platform.py verify-reboot --binary target/debug/rho-cor
 `verify-reboot` 要求内核标识改变、启动时间改变且当前运行时长符合准备后发生的启动，
 再检验原身份、释放与删除事实；不要求任意两次观察的运行时长都降低。
 
-macOS 与 OrbStack Ubuntu 25.04 均已依次通过格式、Clippy、完整 73 项 Cargo 回归与
+此前受管实现已在 macOS 与 OrbStack Ubuntu 25.04 依次通过格式、Clippy、完整 73 项 Cargo 回归与
 `managed_run` 示例。Linux 的四个验证入口也已实跑：跨 UID 连接在权限放宽后的夹具中被宿主拒绝；
 局部标识、来源范围与 PID 命名空间变化保留原任务与删除保护；整个 OrbStack 后端正常停止、启动后，
 内核标识夹具得到 `Gone/BootChanged`，原身份仍只派发一次且可删除。局部标识夹具保持

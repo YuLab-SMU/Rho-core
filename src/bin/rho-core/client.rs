@@ -49,7 +49,12 @@ pub fn main(args: Vec<String>) -> ExitCode {
         Ok(reply) => {
             let ok = reply["ok"] == json!(true);
             match reply["value"]["contract"].as_str() {
-                Some(text) if ok && contract => print(text),
+                Some(text) if ok && contract => {
+                    print(text);
+                    if let Some(activity) = reply["value"]["activity_contract"].as_str() {
+                        print(activity);
+                    }
+                }
                 _ => print(&reply.to_string()),
             }
             if ok {
@@ -81,6 +86,11 @@ fn parse(command: &str, mut args: Args) -> Result<Invocation, String> {
         "cancel",
         "forget",
         "capability",
+        "activity-open",
+        "activity-append",
+        "activity-read",
+        "activity-list",
+        "activity-forget",
     ];
     if !known.contains(&command) {
         return Err(format!("unknown command `{command}`"));
@@ -90,13 +100,17 @@ fn parse(command: &str, mut args: Args) -> Result<Invocation, String> {
     let (mut timeout, mut stream, mut offset, mut max_bytes) =
         (DEFAULT_WAIT_SECS, WireStream::Stdout, 0, usize::MAX);
     let (mut record, mut contract) = (false, false);
+    let (mut source_file, mut events_file, mut expected_cursor) = (None, None, None);
+    let (mut after, mut max_events) = (0, usize::MAX);
     while let Some(flag) = args.next_flag()? {
         match (command, flag.as_str()) {
             (_, "--socket") => socket = Some(args.value(&flag)?),
             (_, "--caller") => caller = Some(args.value(&flag)?),
-            ("submit" | "wait" | "read" | "lookup" | "cancel" | "forget", "--id") => {
-                id = Some(args.value(&flag)?)
-            }
+            (
+                "submit" | "wait" | "read" | "lookup" | "cancel" | "forget" | "activity-append"
+                | "activity-read" | "activity-forget",
+                "--id",
+            ) => id = Some(args.value(&flag)?),
             ("submit", "--executor") => executor = Some(args.value(&flag)?),
             ("submit", "--workdir") => workdir = Some(args.value(&flag)?),
             ("submit", "--code") => code = Some(args.value(&flag)?),
@@ -112,7 +126,16 @@ fn parse(command: &str, mut args: Args) -> Result<Invocation, String> {
                 }
             }
             ("read", "--offset") => offset = crate::number(&flag, &args.value(&flag)?)?,
-            ("read", "--max-bytes") => max_bytes = crate::number(&flag, &args.value(&flag)?)?,
+            ("read" | "activity-read", "--max-bytes") => {
+                max_bytes = crate::number(&flag, &args.value(&flag)?)?
+            }
+            ("activity-open", "--source-file") => source_file = Some(args.value(&flag)?),
+            ("activity-append", "--events-file") => events_file = Some(args.value(&flag)?),
+            ("activity-read", "--after") => after = crate::number(&flag, &args.value(&flag)?)?,
+            ("activity-read", "--limit") => max_events = crate::number(&flag, &args.value(&flag)?)?,
+            ("activity-forget", "--expected-cursor") => {
+                expected_cursor = Some(crate::number(&flag, &args.value(&flag)?)?)
+            }
             ("lookup", "--record") => record = true,
             ("capability", "--contract") => contract = true,
             _ => return Err(format!("unknown option `{flag}` for {command}")),
@@ -134,6 +157,36 @@ fn parse(command: &str, mut args: Args) -> Result<Invocation, String> {
             .ok_or("--caller NAME (or RHO_CORE_CALLER) is required")?;
         let id = || id.clone().ok_or_else(|| "--id ID is required".to_owned());
         match command {
+            "activity-open" => Request::ActivityOpen {
+                caller,
+                source: serde_json::from_str(&read_code(
+                    None,
+                    Some(source_file.ok_or("--source-file PATH|- is required")?),
+                )?)
+                .map_err(|e| format!("invalid activity source: {e}"))?,
+            },
+            "activity-append" => Request::ActivityAppend {
+                caller,
+                stream: id()?,
+                events: serde_json::from_str(&read_code(
+                    None,
+                    Some(events_file.ok_or("--events-file PATH|- is required")?),
+                )?)
+                .map_err(|e| format!("invalid activity events: {e}"))?,
+            },
+            "activity-read" => Request::ActivityRead {
+                caller,
+                stream: id()?,
+                after,
+                max_events,
+                max_bytes,
+            },
+            "activity-list" => Request::ActivityList { caller },
+            "activity-forget" => Request::ActivityForget {
+                caller,
+                stream: id()?,
+                expected_cursor: expected_cursor.ok_or("--expected-cursor N is required")?,
+            },
             "submit" => Request::Submit {
                 caller,
                 request_id: id()?,

@@ -1,8 +1,9 @@
 # Managed Operation 信息模型与存储不变量
 
-本模型只描述 Core 实际受理的本地进程任务。调用方式、资源限额、重启范围与不提供的
+本页的受管模型描述 Core 实际受理的本地进程任务。调用方式、资源限额、重启范围与不提供的
 保证见 [Managed run](MANAGED-RUN.md)；类型维护于 [record.rs](../src/record.rs)。
 历史任务或外部工具的当前产物不能补造 Core 受理。
+独立的外部活动表见下文及[活动观测契约](ACTIVITY.md)；它不写入受管运行表。
 
 ## 身份与原请求
 
@@ -47,6 +48,7 @@ SQLite 对 `(scope_id, caller_id, request_id)` 加唯一约束；代码、目录
 
 - `store_info` 保存格式版本、项目根字节和 scope；已有空/损坏/其他格式数据库不初始化成空库。
 - `operations` 保存不可变受理和每个独立事实；`artifacts` 保存脚本及每路输出的摘要、长度和连续偏移。
+- `activity_streams` 保存调用方、不可变外部来源和下一序号；`activity_events` 保存已收取的完整事件与收取时刻。批量追加、重复内容核对、连续序号和保留淘汰在同一事务内完成；保留范围不是完整外部执行历史。
 - `BEGIN IMMEDIATE` 内完成幂等键与全局记录容量检查、插入受理；COMMIT 成功之后才能派发。
 - 派发标记先单独 COMMIT，再调用原生执行方；该窗口可能只有标记而没有进程，未知也不得重派。
 - 启动/退出、取消、两路输出、释放各有事务。输出字节在 Blob 同步后才能被事务引用。
@@ -62,8 +64,9 @@ SQLite 配置为 WAL、FULL 同步，并启用 macOS 的 fullfsync。当前锁�
 [synchronous 说明](https://www.sqlite.org/pragma.html#pragma_synchronous) 定义数据库保证；
 数据库事务不包含原生副作用，也不恢复已经丢失的原生句柄。物理断电仍需单独实验。
 开发状态可在格式变更时清除重建；只维护当前 SQLite 格式，不建立旧格式识别、保留或迁移机制。
-当前格式为 3，`ProcessContext.boot_id_scope` 是必需字段，没有推断默认值；旧格式打开时拒绝，
-不补造来源或迁移记录。
+当前格式为 4，新增上述外部活动表。`ProcessContext.boot_id_scope` 仍是必需字段，没有
+推断默认值；旧格式打开时拒绝且原数据不改写，不补造来源或迁移记录。使用明确选择的
+新开发存储；新实现未安装到用户现有 Host。
 
 ## 单调更新与可验证行为
 

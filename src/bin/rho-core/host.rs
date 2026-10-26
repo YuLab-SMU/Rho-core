@@ -87,9 +87,7 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
     }
     let project = project.ok_or("--project DIR is required")?;
     let state_dir = state_dir.ok_or("--state-dir DIR is required")?;
-    if executors.is_empty() {
-        return Err("at least one --executor NAME=/absolute/program is required".into());
-    }
+    // With no executor the Host can retain observations but cannot execute code.
     let mut config = CoreConfig::new(project, state_dir).limits(limits);
     config.executors = executors;
     Ok(Options {
@@ -120,11 +118,19 @@ fn set_limit(limits: &mut Limits, name: &str, value: &str) -> Result<(), String>
         "max_read_bytes" => limits.max_read_bytes = count()?,
         "stop_grace_ms" => limits.stop_grace = millis()?,
         "output_close_grace_ms" => limits.output_close_grace = millis()?,
+        "activity.max_streams" => limits.activity.max_streams = count()?,
+        "activity.max_events" => limits.activity.max_events = count()?,
+        "activity.max_bytes" => limits.activity.max_bytes = count()?,
+        "activity.max_event_bytes" => limits.activity.max_event_bytes = count()?,
+        "activity.max_batch_events" => limits.activity.max_batch_events = count()?,
+        "activity.max_batch_bytes" => limits.activity.max_batch_bytes = count()?,
+        "activity.max_read_events" => limits.activity.max_read_events = count()?,
+        "activity.max_read_bytes" => limits.activity.max_read_bytes = count()?,
         _ => {
             return Err(format!(
                 "unknown limit `{name}`; known: max_running, max_records, max_code_bytes, \
                  max_args, max_arg_bytes, max_stream_bytes, max_output_chunks, max_read_bytes, \
-                 stop_grace_ms, output_close_grace_ms"
+                 stop_grace_ms, output_close_grace_ms, activity.* (see docs/ACTIVITY.md)"
             ));
         }
     }
@@ -320,6 +326,40 @@ impl Host {
     fn call(&self, request: Request) -> Value {
         let core = &self.core;
         let result = match request {
+            Request::ActivityOpen { caller, source } => core
+                .open_activity(&caller, source)
+                .map(|v| json!(v))
+                .map_err(activity_error),
+            Request::ActivityAppend {
+                caller,
+                stream,
+                events,
+            } => core
+                .append_activity(&caller, &stream, &events)
+                .map(|v| json!({"receipts":v}))
+                .map_err(activity_error),
+            Request::ActivityRead {
+                caller,
+                stream,
+                after,
+                max_events,
+                max_bytes,
+            } => core
+                .read_activity(&caller, &stream, after, max_events, max_bytes)
+                .map(|v| json!(v))
+                .map_err(activity_error),
+            Request::ActivityList { caller } => core
+                .list_activity(&caller)
+                .map(|v| json!({"streams":v}))
+                .map_err(activity_error),
+            Request::ActivityForget {
+                caller,
+                stream,
+                expected_cursor,
+            } => core
+                .forget_activity(&caller, &stream, expected_cursor)
+                .map(|()| json!({"forgotten":stream}))
+                .map_err(activity_error),
             Request::Capability { contract } => Ok(self.capability(contract)),
             Request::Submit {
                 caller,
@@ -417,6 +457,7 @@ impl Host {
                 "args": executor.args,
             })).collect::<Vec<_>>(),
             "limits": {
+                "activity": limits.activity,
                 "max_running": limits.max_running,
                 "max_records": limits.max_records,
                 "max_code_bytes": limits.max_code_bytes,
@@ -442,9 +483,14 @@ impl Host {
         });
         if contract {
             value["contract"] = json!(rho_core::CONTRACT);
+            value["activity_contract"] = json!(rho_core::ACTIVITY_CONTRACT);
         }
         value
     }
+}
+
+fn activity_error(error: rho_core::ActivityError) -> Value {
+    failure(error.kind(), error.to_string())
 }
 
 /// Only processes of this host's user may use it; the socket mode is 0600 too.

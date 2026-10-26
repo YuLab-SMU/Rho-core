@@ -42,6 +42,11 @@ rho-core serve --project ~/work/proj --state-dir ~/work/proj-state \
 
 选项也可写成 `--flag=value`。SIGTERM、SIGINT 与 SIGHUP 使宿主按下文“正常停止”退出；
 启动时已被忽略的信号（如 `nohup` 下的 SIGHUP）保持忽略。宿主不改信号屏蔽字。
+省略所有 `--executor` 可启动只接收活动的 Host；没有执行方时不能提交代码。
+活动限额使用 `--limit activity.NAME=VALUE`，其中 NAME 是
+[活动契约](ACTIVITY.md#reading-and-retention)中的 `max_streams`、`max_events`、
+`max_bytes`、`max_event_bytes`、`max_batch_events`、`max_batch_bytes`、
+`max_read_events`、`max_read_bytes`。`capability` 返回实际生效值。
 
 ## Agent 调用
 
@@ -59,7 +64,7 @@ rho-core lookup --id fit-001 --record           # 附带带来源的已保存事
 rho-core list
 rho-core cancel --id fit-001
 rho-core forget --id fit-001
-rho-core capability --contract                  # 打印契约全文
+rho-core capability --contract                  # 打印受管运行与活动观测契约
 ```
 
 | 命令 | 作用 |
@@ -75,6 +80,34 @@ rho-core capability --contract                  # 打印契约全文
 
 身份与调用方为 1–128 个 `[A-Za-z0-9._:@-]` 字符。身份命名该调用方的一个请求：同一内容再次提交
 返回原运行且不再派发，内容不同为冲突；需要再次运行时使用新身份。
+
+## 外部活动采集与重读
+
+活动命令使用相同 socket/caller 选择，调用公共库的活动接口；不创建受管运行。
+
+| 命令 | 作用 |
+| --- | --- |
+| `activity-open --source-file PATH\|-` | 以不可变 JSON 来源打开流；重复返回原流，改变来源冲突 |
+| `activity-append --id STREAM --events-file PATH\|-` | 原子追加 JSON 事件数组；返回 `receipts`，重复标记 `existing` |
+| `activity-read --id STREAM [--after N] [--limit N] [--max-bytes N]` | 有界完整事件页，包含保留范围、缺口和下一游标 |
+| `activity-list` | 本调用方全部活动来源与保留范围 |
+| `activity-forget --id STREAM --expected-cursor N` | 只有当前游标仍匹配时删除流；结束其记录去重保护 |
+
+例如在已运行的测试 Host 上记录一条外部观察：
+
+```sh
+rho-core activity-open --source-file - <<'JSON'
+{"stream_id":"trial","producer":"fixture","session_id":"session-1","metadata":{"normalizer":"fixture/1"}}
+JSON
+rho-core activity-append --id trial --events-file - <<'JSON'
+[{"sequence":0,"kind":"tool.requested","data":{"native_id":"call-1","tool":"Bash","command":"python3 analysis.py"}}]
+JSON
+rho-core activity-read --id trial --after 0 --limit 10
+```
+
+这里仅保存文本，不执行其中的命令。真实 Claude Code/dsh 适配器与可运行验收在
+[Agent 观测示例](../../Rho-plugins/examples/agent-observation/README.md)。客户端退出码 4
+仍表示回执未知；保持原来源和序号，读取或重送同一批事件，不另起 Agent 任务。
 
 ## 回复与退出码
 
