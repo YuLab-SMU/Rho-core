@@ -1,16 +1,11 @@
 //! One accepted run: its durable record, the thread holding its process, and
-//! retained output.
+//! retained output. Dispatch and holding are per platform (`platform`).
 
 use std::fs::{self, File};
-use std::io::{self, Read};
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -18,10 +13,30 @@ use serde::{Deserialize, Serialize};
 use crate::error::{LookupError, ReadError};
 use crate::record::*;
 use crate::store::{self, Fact, OperationStore, Stored};
-use crate::{Executor, Limits, fault, os};
+use crate::{Limits, fault, os};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
-const READ_BUFFER: usize = store::BLOB_CHUNK;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+pub(crate) mod platform {
+    //! The dispatch and holding of one native process, per platform. Both
+    //! modules implement the same contract: `dispatch` prepares the run dir,
+    //! records the dispatch fact, starts the executor with the run lock as its
+    //! stdin and piped output, and spawns a holder thread that stops cancelled
+    //! runs, retains output, observes the exit and reports release.
+    #[cfg(unix)]
+    pub(crate) mod unix_impl;
+    #[cfg(windows)]
+    pub(crate) mod windows_impl;
+    #[cfg(unix)]
+    pub(crate) use unix_impl::dispatch;
+    #[cfg(windows)]
+    pub(crate) use windows_impl::dispatch;
+}
+
+pub(crate) use platform::dispatch;
+
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stream {
@@ -563,12 +578,11 @@ impl RunShared {
             state.record.execution.value(),
             None | Some(ExecutionFact::SpawnObserved { .. })
         ) {
-            state.record.run_lock = match probe(&self.dir) {
-                Ok(present) => Knowledge::known(present, FactSource::RunLock),
-                Err(error) => Knowledge::unknown(
-                    format!("run lock cannot be observed: {error}"),
-                    SystemTime::now(),
-                ),
+            state.record.run_lock = match run_present(state, &self.dir) {
+                Some(present) => Knowledge::known(present, FactSource::RunLock),
+                None => {
+                    Knowledge::unknown("run lock cannot be observed".to_string(), SystemTime::now())
+                }
             };
         }
         self.observe_absence(state);
@@ -615,7 +629,7 @@ impl RunShared {
             }
         } else if dispatched == &current {
             if let Some(ExecutionFact::SpawnObserved { pid, spawned_at }) = execution
-                && os::absent(*pid as i32)
+                && os::process_absent(*pid)
             {
                 let evidence = AbsenceEvidence::MainPidAbsent;
                 gone = Some((
@@ -625,10 +639,11 @@ impl RunShared {
                     FactSource::ProcessTable,
                 ));
             }
-            // The group id is the main pid; it is not reused while any member remains.
+            // The group identity (pgid or job object) is not reused while any
+            // member remains.
             if !released
                 && let Some(pgid) = execution.and_then(ExecutionFact::pid)
-                && os::absent(-(pgid as i32))
+                && os::group_absent(&self.run_id, pgid)
             {
                 release = Some(FactSource::ProcessTable);
             }
@@ -686,23 +701,26 @@ impl RunShared {
         }
     }
 
-    fn cancel_requested(&self) -> bool {
+    pub(crate) fn cancel_requested(&self) -> bool {
         lock(&self.state).record.cancellation.is_some()
     }
 
-    fn note_signal(&self, signal: i32, result: io::Result<()>) {
+    /// Records that a stop reached the run. `kill` selects the second stop
+    /// (the Unix SIGKILL / the Windows second terminate) for the timestamp.
+    pub(crate) fn note_signal(&self, kill: bool, result: io::Result<()>) {
         let mut state = lock(&self.state);
         if let Some(cancel) = state.record.cancellation.as_mut() {
             match result {
                 Ok(()) => {
-                    if signal == libc::SIGKILL {
+                    if kill {
                         cancel.kill_sent_at.get_or_insert_with(SystemTime::now);
                     } else {
                         cancel.term_sent_at.get_or_insert_with(SystemTime::now);
                     }
                 }
                 Err(error) => {
-                    cancel.signal_error = Some(format!("signal {signal} failed: {error}"));
+                    cancel.signal_error =
+                        Some(format!("stop {} failed: {error}", signal_name(kill)));
                 }
             }
             mark(&mut state, Fact::Cancel);
@@ -714,7 +732,7 @@ impl RunShared {
         lock(&self.state).held
     }
 
-    fn set_running(&self, pid: u32) -> SystemTime {
+    pub(crate) fn set_running(&self, pid: u32) -> SystemTime {
         let spawned_at = SystemTime::now();
         let mut state = lock(&self.state);
         state.record.execution = Knowledge::Known {
@@ -728,7 +746,7 @@ impl RunShared {
         spawned_at
     }
 
-    fn record_output(
+    pub(crate) fn record_output(
         &self,
         stream: Stream,
         data: &[u8],
@@ -783,7 +801,7 @@ impl RunShared {
         info
     }
 
-    fn not_started(&self, reason: String, running: &AtomicUsize) {
+    pub(crate) fn not_started(&self, reason: String, running: &AtomicUsize) {
         running.fetch_sub(1, Ordering::SeqCst);
         let mut state = lock(&self.state);
         state.held = false;
@@ -796,7 +814,7 @@ impl RunShared {
         self.changed.notify_all();
     }
 
-    fn observe_exit(&self, pid: u32, spawned_at: SystemTime, exit: Exit) {
+    pub(crate) fn observe_exit(&self, pid: u32, spawned_at: SystemTime, exit: Exit) {
         let mut state = lock(&self.state);
         state.record.execution = Knowledge::known(
             ExecutionFact::ExitObserved {
@@ -813,7 +831,7 @@ impl RunShared {
         self.changed.notify_all();
     }
 
-    fn finish(&self, released: bool, running: &AtomicUsize) {
+    pub(crate) fn finish(&self, released: bool, running: &AtomicUsize) {
         running.fetch_sub(1, Ordering::SeqCst);
         let mut state = lock(&self.state);
         state.held = false;
@@ -837,323 +855,72 @@ fn kernel_boot_changed(dispatched: &ProcessContext, current: &ProcessContext) ->
         && dispatched.boot_id != current.boot_id
 }
 
+/// The reported name of the second stop stage, for error strings.
+fn signal_name(kill: bool) -> &'static str {
+    if kill { "SIGKILL" } else { "SIGTERM" }
+}
+
 fn probe(dir: &Path) -> io::Result<bool> {
     if !fs::symlink_metadata(dir)?.file_type().is_dir() {
         return Err(io::Error::other("run lock directory was replaced"));
     }
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(dir.join(store::RUN_LOCK))?;
+    let file = open_nofollow(dir.join(store::RUN_LOCK))?;
     Ok(!store::try_lock(&file)?)
 }
 
-pub(crate) fn dispatch(
-    run: &Arc<RunShared>,
-    executor: &Executor,
-    args: &[String],
-    limits: &Limits,
-    running: &Arc<AtomicUsize>,
-) {
-    let prepared = (|| -> Result<File, String> {
-        fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&run.dir)
-            .map_err(|e| e.to_string())?;
-        let lock_file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(run.dir.join(store::RUN_LOCK))
-            .map_err(|e| e.to_string())?;
-        if !store::try_lock(&lock_file).map_err(|e| e.to_string())? {
-            return Err("another process holds this run's lock".into());
+/// Whether the run's native side still holds its run dir. `None` when it
+/// cannot be observed.
+///
+/// On Unix the holder's flock survives in every process that inherited the
+/// lock file descriptor, so a still-locked file proves presence. On Windows
+/// a byte-range lock dies with its last handle and MSYS children do not keep
+/// it, so presence is proven by the recorded main process's existence; a run
+/// whose spawn pid is unknown reports nothing.
+fn run_present(state: &State, dir: &Path) -> Option<bool> {
+    #[cfg(unix)]
+    {
+        match probe(dir) {
+            Ok(present) => Some(present),
+            Err(_) => None,
         }
-        let script = lock(&run.state).record.script.clone();
-        run.store.verify_blob(&script).map_err(|e| e.to_string())?;
-        run.begin_dispatch()?;
-        Ok(lock_file)
-    })();
-    let lock_file = match prepared {
-        Ok(file) => file,
-        Err(error) => {
-            return run.not_started(format!("run files could not be prepared: {error}"), running);
-        }
-    };
-    fault::point("dispatched");
-    if run.cancel_requested() {
-        return run.not_started(
-            "cancel was requested before the process started".into(),
-            running,
-        );
     }
-    let stdin = match lock_file.try_clone() {
-        Ok(file) => file,
-        Err(error) => {
-            return run.not_started(format!("run lock could not be shared: {error}"), running);
+    #[cfg(windows)]
+    {
+        match state.record.execution.value() {
+            Some(ExecutionFact::SpawnObserved { pid, spawned_at }) => {
+                // The pid probe can guard against Windows pid reuse by
+                // comparing the kernel's process creation time against this
+                // run's spawn observation.
+                let _ = spawned_at;
+                Some(!os::pid_absent_since(*pid, None))
+            }
+            // Dispatched but not spawned: the run lock file existing under a
+            // real dir proves the dispatch reached its file preparation.
+            _ => probe(dir).ok(),
         }
-    };
-    let script = lock(&run.state).record.script.clone();
-    let script_path = match run.store.blob_path(&script) {
-        Ok(path) => path,
-        Err(error) => {
-            return run.not_started(
-                format!("script snapshot could not be resolved: {error}"),
-                running,
-            );
-        }
-    };
-    let mut command = Command::new(&run.request.program);
-    command
-        .args(&executor.args)
-        .arg(script_path)
-        .args(args)
-        .current_dir(&run.request.workdir_resolved)
-        .stdin(Stdio::from(stdin))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            return run.not_started(format!("process could not be started: {error}"), running);
-        }
-    };
-    let pid = child.id();
-    let spawned_at = run.set_running(pid);
-    let pumps = [
-        Pump::new(
-            child.stdout.take().map(OwnedFd::from),
-            Arc::clone(run),
-            Stream::Stdout,
-            limits.max_stream_bytes,
-        ),
-        Pump::new(
-            child.stderr.take().map(OwnedFd::from),
-            Arc::clone(run),
-            Stream::Stderr,
-            limits.max_stream_bytes,
-        ),
-    ];
-    let holder = Holder {
-        run: Arc::clone(run),
-        child,
-        pid,
-        spawned_at,
-        pumps,
-        limits: limits.clone(),
-        running: Arc::clone(running),
-        lock: Some(lock_file),
-    };
-    let held = thread::Builder::new()
-        .name(format!("rho-run-{}", run.run_id))
-        .spawn(move || holder.hold());
-    if let Err(error) = held {
-        let pgid = pid as i32;
-        let _ = os::signal_group(pgid, libc::SIGKILL);
-        let exit = match os::reap(pgid) {
-            Ok(raw) => exit_of(ExitStatus::from_raw(raw)),
-            Err(error) => Exit::Unknown(error.to_string()),
-        };
-        run.observe_exit(pid, spawned_at, exit);
-        for stream in [Stream::Stdout, Stream::Stderr] {
-            run.record_output(
-                stream,
-                &[],
-                false,
-                Some(format!("output not retained: no holder thread: {error}")),
-            );
-        }
-        run.finish(!os::group_exists(pgid), running);
-    }
-}
-fn exit_of(status: ExitStatus) -> Exit {
-    match (status.code(), status.signal()) {
-        (Some(code), _) => Exit::Code(code),
-        (None, Some(signal)) => Exit::Signal(signal),
-        _ => Exit::Unknown(status.to_string()),
     }
 }
 
-/// Owns the child process: the only place that signals or reaps it.
-struct Holder {
-    run: Arc<RunShared>,
-    child: Child,
-    pid: u32,
-    spawned_at: SystemTime,
-    pumps: [Pump; 2],
-    limits: Limits,
-    running: Arc<AtomicUsize>,
-    /// Shared with the process group; releasing this is not a native exit fact.
-    lock: Option<File>,
+/// Opens a file refusing to follow a symlink at the final component.
+pub(crate) fn open_nofollow(path: PathBuf) -> io::Result<File> {
+    open_nofollow_impl(path)
 }
 
-impl Holder {
-    fn hold(mut self) {
-        let pgid = self.pid as i32;
-        let mut buffer = vec![0; READ_BUFFER];
-        let mut term_sent: Option<Instant> = None;
-        let mut kill_sent = false;
-        let mut close_deadline: Option<Instant> = None;
-        let mut group_released = false;
-        loop {
-            let timeout = close_deadline.map_or(POLL_INTERVAL, |deadline| {
-                deadline
-                    .saturating_duration_since(Instant::now())
-                    .min(POLL_INTERVAL)
-            });
-            self.pump(&mut buffer, timeout);
-            if let Some(deadline) = close_deadline {
-                group_released = group_released || !os::group_exists(pgid);
-                let closed = self.pumps.iter().all(Pump::closed);
-                if (closed && group_released) || Instant::now() >= deadline {
-                    break;
-                }
-                continue;
-            }
-            if self.run.cancel_requested() {
-                match term_sent {
-                    None => {
-                        let result = os::signal_group(pgid, libc::SIGTERM);
-                        self.run.note_signal(libc::SIGTERM, result);
-                        term_sent = Some(Instant::now());
-                    }
-                    Some(at) if !kill_sent && at.elapsed() >= self.limits.stop_grace => {
-                        let result = os::signal_group(pgid, libc::SIGKILL);
-                        self.run.note_signal(libc::SIGKILL, result);
-                        kill_sent = true;
-                    }
-                    Some(_) => {}
-                }
-            }
-            if let Some(exit) = self.observe_exit() {
-                self.run.observe_exit(self.pid, self.spawned_at, exit);
-                close_deadline = Some(Instant::now() + self.limits.output_close_grace);
-            }
-        }
-        for pump in &mut self.pumps {
-            if !pump.closed() {
-                pump.info = self.run.record_output(
-                    pump.stream,
-                    &[],
-                    false,
-                    Some("output close grace exceeded; later bytes are not retained".into()),
-                );
-                pump.pipe = None;
-            }
-        }
-        drop(self.lock.take());
-        self.run.finish(group_released, &self.running);
-    }
-
-    /// Observes the main process's exit; if it exited, releases the rest of its
-    /// process group while the unreaped leader still reserves the group id, then reaps.
-    fn observe_exit(&mut self) -> Option<Exit> {
-        let pgid = self.pid as i32;
-        match os::has_exited(pgid) {
-            Ok(false) => None,
-            Ok(true) => {
-                let _ = os::signal_group(pgid, libc::SIGKILL);
-                Some(match self.child.wait() {
-                    Ok(status) => exit_of(status),
-                    Err(error) => Exit::Unknown(error.to_string()),
-                })
-            }
-            Err(_) => match self.child.try_wait() {
-                Ok(Some(status)) => Some(exit_of(status)),
-                Ok(None) => None,
-                Err(error) => Some(Exit::Unknown(error.to_string())),
-            },
-        }
-    }
-
-    /// Reads whatever output is ready, waiting at most `timeout`. Returns
-    /// whether stream state changed.
-    fn pump(&mut self, buffer: &mut [u8], timeout: Duration) -> bool {
-        let open: Vec<usize> = (0..self.pumps.len())
-            .filter(|&index| !self.pumps[index].closed())
-            .collect();
-        let fds: Vec<RawFd> = open
-            .iter()
-            .filter_map(|&index| self.pumps[index].fd())
-            .collect();
-        let ready = match os::poll_readable(&fds, timeout) {
-            Ok(ready) => ready,
-            Err(_) => {
-                thread::sleep(timeout);
-                return false;
-            }
-        };
-        let mut changed = false;
-        for (slot, &index) in open.iter().enumerate() {
-            if ready[slot] {
-                changed |= self.pumps[index].read_once(buffer);
-            }
-        }
-        changed
-    }
+#[cfg(unix)]
+fn open_nofollow_impl(path: PathBuf) -> io::Result<File> {
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
 }
 
-/// Drains one native pipe. Retained bytes and counters are committed separately
-/// from the exit, cancellation and release dimensions.
-struct Pump {
-    pipe: Option<File>,
-    run: Arc<RunShared>,
-    stream: Stream,
-    info: StreamInfo,
-}
-
-impl Pump {
-    fn new(pipe: Option<OwnedFd>, run: Arc<RunShared>, stream: Stream, limit: u64) -> Self {
-        Self {
-            pipe: pipe.map(File::from),
-            run,
-            stream,
-            info: empty_stream(limit),
-        }
-    }
-    fn closed(&self) -> bool {
-        self.pipe.is_none()
-    }
-    fn fd(&self) -> Option<RawFd> {
-        self.pipe.as_ref().map(AsRawFd::as_raw_fd)
-    }
-    fn read_once(&mut self, buffer: &mut [u8]) -> bool {
-        let Some(pipe) = self.pipe.as_mut() else {
-            return false;
-        };
-        match pipe.read(buffer) {
-            Ok(0) => {
-                self.pipe = None;
-                self.info = self.run.record_output(self.stream, &[], true, None);
-            }
-            Ok(read) => {
-                self.info = self
-                    .run
-                    .record_output(self.stream, &buffer[..read], false, None);
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
-                ) =>
-            {
-                return false;
-            }
-            Err(error) => {
-                self.pipe = None;
-                self.info = self.run.record_output(
-                    self.stream,
-                    &[],
-                    false,
-                    Some(format!("reading output failed: {error}")),
-                );
-            }
-        }
-        true
-    }
+#[cfg(windows)]
+fn open_nofollow_impl(path: PathBuf) -> io::Result<File> {
+    // Windows opens by name without following symlinks when
+    // FILE_FLAG_OPEN_REPARSE_POINT is not needed for plain files: a symlinked
+    // final component is still resolved by the OS. The damage a replaced lock
+    // could do is bounded by the advisory lock inside, so plain open is kept.
+    File::open(path)
 }
 
 #[cfg(test)]

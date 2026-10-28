@@ -28,7 +28,10 @@ Agent 的选定活动，Rho-plugins 的适配器从 Claude Code 与 dsh 的原�
 ## 已验证的范围
 
 - **受管运行、重启与宿主**：macOS 26.5.2（arm64）与 Ubuntu 25.04（amd64），Rust 1.97.0，
-  依次通过格式、Clippy、当时完整的 73 项回归与 `managed_run` 示例。Linux 平台脚本的
+  依次通过格式、Clippy、当时完整的 73 项回归与 `managed_run` 示例。Windows 11
+  x86-64（10.0.26200，MSVC，Rust 1.97.0）补充移植后于 2026-10-28 依次通过格式、
+  Clippy、全部 79 项回归与 `managed_run` 示例；平台映射与剩余差异见
+  [Windows 支持](WINDOWS.md)。Linux 平台脚本的
   四个入口都实跑过：跨 UID、局部启动标识与 PID 命名空间变化、真实内核重启
   （[Linux 记录](work/CORE-20261011-03.md)）。macOS 真实跨 UID 拒绝；独立 Debian 13 guest
   真实内核 panic 与虚拟断电后，原身份与完整、部分输出都保留且不重派

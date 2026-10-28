@@ -5,6 +5,7 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Output, Stdio};
@@ -14,8 +15,9 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use tempfile::TempDir;
 
-#[path = "support/dispatch.rs"]
-mod dispatch;
+mod support;
+
+use support::dispatch;
 
 const BIN: &str = env!("CARGO_BIN_EXE_rho-core");
 const CALLER: &str = "agent";
@@ -29,6 +31,13 @@ echo released";
 
 struct Fixture {
     dir: TempDir,
+}
+
+#[cfg(windows)]
+thread_local! {
+    /// The stop file each serve() registered, in spawn order.
+    static STOP_FILES: std::cell::RefCell<Vec<PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 impl Fixture {
@@ -56,23 +65,41 @@ impl Fixture {
 
     fn serve_command(&self, extra: &[&str]) -> Command {
         let mut command = Command::new(BIN);
+        #[cfg(windows)]
+        {
+            // The host runs in its own process group so no stop signal
+            // reaches the test runner; stopping uses the stop file.
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        }
         command
             .arg("serve")
             .arg("--project")
             .arg(self.dir.path().join("project"))
             .arg("--state-dir")
             .arg(self.state())
-            .args(["--executor", "sh=/bin/sh"])
+            .args(["--executor", &format!("sh={}", support::sh_program())])
             .args(extra);
         command
     }
 
     fn serve(&self, extra: &[&str]) -> Host {
-        let mut child = self
-            .serve_command(extra)
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut serve_command = self.serve_command(extra);
+        #[cfg(windows)]
+        {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static SEQ: AtomicU64 = AtomicU64::new(0);
+            let stop_file = self.dir.path().join(format!(
+                "host-{}-{}.stop",
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::SeqCst),
+            ));
+            let _ = fs::remove_file(&stop_file);
+            serve_command.env("RHO_CORE_STOP_FILE", &stop_file);
+            STOP_FILES.with(|files| files.borrow_mut().push(stop_file));
+        }
+        let mut child = serve_command.stdout(Stdio::piped()).spawn().unwrap();
         let mut stdout = BufReader::new(child.stdout.take().unwrap());
         let ready = next_line(&mut stdout);
         let socket = ready["ready"]["socket"]
@@ -83,6 +110,8 @@ impl Fixture {
             child,
             stdout,
             socket,
+            #[cfg(windows)]
+            stop_file: STOP_FILES.with(|files| files.borrow_mut().pop()),
         }
     }
 }
@@ -97,6 +126,9 @@ struct Host {
     child: Child,
     stdout: BufReader<ChildStdout>,
     socket: PathBuf,
+    /// The stop file the host watches on Windows; unused elsewhere.
+    #[allow(dead_code)]
+    stop_file: Option<PathBuf>,
 }
 
 impl Host {
@@ -105,27 +137,40 @@ impl Host {
     }
 
     fn signal(&self, signal: i32) {
-        // SAFETY: kill has no memory-safety preconditions.
-        assert_eq!(unsafe { libc::kill(self.child.id() as i32, signal) }, 0);
+        support::send_signal(self.child.id(), signal);
     }
 
     fn kill(&mut self) {
-        self.signal(libc::SIGKILL);
+        self.signal(9);
         self.child.wait().unwrap();
     }
 
-    /// Sends SIGTERM and returns the exit success and the shutdown report.
+    /// Sends a stop signal and returns the exit success and the shutdown
+    /// report. On Windows the host stops through its stop file (console
+    /// ctrl events cannot reach a new-console process); the report follows
+    /// once the runs have stopped.
     fn terminate(&mut self) -> (bool, Value) {
-        self.signal(libc::SIGTERM);
-        let report = next_line(&mut self.stdout);
-        (self.child.wait().unwrap().success(), report)
+        if let Some(stop_file) = self.stop_file.take() {
+            fs::write(stop_file, b"").unwrap();
+        }
+        #[cfg(unix)]
+        self.signal(15);
+        // The shutdown line follows the stop; give the handler a moment.
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            let report = next_line(&mut self.stdout);
+            if !report.is_null() || Instant::now() >= deadline {
+                return (self.child.wait().unwrap().success(), report);
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 
 impl Drop for Host {
     fn drop(&mut self) {
         if matches!(self.child.try_wait(), Ok(None)) {
-            self.signal(libc::SIGTERM);
+            self.signal(15);
             let deadline = Instant::now() + PATIENCE;
             while matches!(self.child.try_wait(), Ok(None)) && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(20));
@@ -297,10 +342,20 @@ fn without_a_host_nothing_is_sent_and_nothing_runs() {
     assert_eq!((code, kind(&reply)), (3, "host_unavailable"), "{reply}");
 
     // A socket left behind by a host that is gone refuses connections.
-    drop(UnixListener::bind(&socket).unwrap());
-    let (code, reply) = cli(&socket, CALLER, &args, None);
-    assert_eq!((code, kind(&reply)), (3, "host_unavailable"), "{reply}");
-    assert_eq!(fixture.dispatches(), 0);
+    #[cfg(unix)]
+    {
+        drop(UnixListener::bind(&socket).unwrap());
+        let (code, reply) = cli(&socket, CALLER, &args, None);
+        assert_eq!((code, kind(&reply)), (3, "host_unavailable"), "{reply}");
+        assert_eq!(fixture.dispatches(), 0);
+    }
+    #[cfg(windows)]
+    {
+        // A named pipe vanishes with its server; nothing to leave behind.
+        let (code, reply) = cli(&socket, CALLER, &args, None);
+        assert_eq!((code, kind(&reply)), (3, "host_unavailable"), "{reply}");
+        assert_eq!(fixture.dispatches(), 0);
+    }
 
     // A new host replaces that socket and has no record of the request.
     let host = fixture.serve(&[]);
@@ -361,7 +416,10 @@ fn cancel_through_the_host_ends_the_run_with_sigterm() {
     assert_eq!(cancelled["value"]["cancel"]["reason"], "Caller");
     let (_, done) = host.cli(&["wait", "--id", "job", "--timeout", "20"]);
     let finished = &done["value"]["status"]["Finished"];
-    assert_eq!(finished["exit"]["Signal"], libc::SIGTERM, "{done}");
+    #[cfg(unix)]
+    assert_eq!(finished["exit"]["Signal"], 15, "{done}");
+    #[cfg(windows)]
+    assert_eq!(finished["exit"]["Code"], 1, "{done}");
     assert_eq!(finished["group_released"], true);
     assert!(done["value"]["cancel"]["kill_sent_at"].is_null(), "{done}");
 }
@@ -375,6 +433,7 @@ fn a_killed_host_restarts_and_finds_its_runs_without_dispatching_again() {
     eventually("dispatch", || fixture.dispatches() == 1);
 
     host.kill();
+    #[cfg(unix)]
     assert!(host.socket.exists(), "a killed host leaves its socket");
     let (code, reply) = host.cli(&["lookup", "--id", "job"]);
     assert_eq!((code, kind(&reply)), (3, "host_unavailable"), "{reply}");
@@ -413,6 +472,7 @@ fn a_terminated_host_stops_its_runs_and_removes_its_socket() {
     let (success, report) = host.terminate();
     assert!(success, "{report}");
     assert_eq!(report["shutdown"]["stopped"][0], run_id, "{report}");
+    #[cfg(unix)]
     assert!(!host.socket.exists());
     let (code, reply) = host.cli(&["list"]);
     assert_eq!((code, kind(&reply)), (3, "host_unavailable"), "{reply}");
@@ -420,10 +480,10 @@ fn a_terminated_host_stops_its_runs_and_removes_its_socket() {
     let host = fixture.serve(&[]);
     let (_, view) = host.cli(&["lookup", "--id", "job"]);
     assert_eq!(view["value"]["terminal"], true, "{view}");
-    assert_eq!(
-        view["value"]["status"]["Finished"]["exit"]["Signal"],
-        libc::SIGTERM
-    );
+    #[cfg(unix)]
+    assert_eq!(view["value"]["status"]["Finished"]["exit"]["Signal"], 15);
+    #[cfg(windows)]
+    assert_eq!(view["value"]["status"]["Finished"]["exit"]["Code"], 1);
     assert_eq!(view["value"]["cancel"]["reason"], "Shutdown");
     assert_eq!(fixture.dispatches(), 1);
 }
@@ -484,12 +544,16 @@ fn oversized_requests_are_refused_before_anything_starts() {
     assert_eq!((code, kind(&reply)), (1, "request_too_large"), "{reply}");
 
     // A client that ignores the bound gets an answer and the host goes on.
-    let stream = UnixStream::connect(&host.socket).unwrap();
-    let mut reader = BufReader::new(&stream);
+    #[cfg(unix)]
+    let raw = UnixStream::connect(&host.socket).unwrap();
+    #[cfg(windows)]
+    #[cfg(windows)]
+    let raw = unsafe { rho_core::os::debug_connect_pipe(&host.socket.to_string_lossy()).unwrap() };
+    let mut reader = BufReader::new(&raw);
     let mut greeting = String::new();
     reader.read_line(&mut greeting).unwrap();
     assert!(greeting.contains("\"ready\""), "{greeting}");
-    (&stream).write_all(&vec![b'x'; max]).unwrap();
+    (&raw).write_all(&vec![b'x'; max]).unwrap();
     let mut answer = String::new();
     reader.read_line(&mut answer).unwrap();
     let answer: Value = serde_json::from_str(&answer).unwrap();
@@ -539,5 +603,5 @@ fn a_full_host_answers_busy_and_a_lost_reply_is_reported_unknown() {
     // No host holds the run any more; end it before its directory goes away.
     fixture.release();
     // SAFETY: signal 0 only checks for existence.
-    eventually("the run to end", || unsafe { libc::kill(pid, 0) } != 0);
+    eventually("the run to end", || !support::process_alive(pid as u32));
 }

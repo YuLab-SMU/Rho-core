@@ -9,6 +9,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 #[cfg(target_os = "macos")]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -163,14 +164,50 @@ pub(crate) fn try_lock(file: &File) -> io::Result<bool> {
 }
 
 fn mkdir(path: &Path) -> io::Result<()> {
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(path)?;
+    #[cfg(unix)]
+    {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)?;
+    }
+    #[cfg(windows)]
+    {
+        fs::DirBuilder::new().recursive(true).create(path)?;
+    }
     if !fs::symlink_metadata(path)?.file_type().is_dir() {
         return Err(io::Error::other("store directory is not a real directory"));
     }
     Ok(())
+}
+
+/// Opens a file for reading and writing without following a symlink at the
+/// final component, creating it when missing, and restricting it to the owner
+/// on Unix. On Windows a replaced final component is only bounded by the
+/// advisory lock inside; SQLite must be able to open the same database file,
+/// so normal sharing is kept and exclusivity comes from the store lock file.
+fn open_private(path: &Path, create: bool) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).truncate(false);
+    if create {
+        options.create(true);
+    }
+    #[cfg(unix)]
+    {
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)
+}
+
+/// Opens a file for reading without following a symlink at the final component.
+fn open_read_private(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)
 }
 
 pub(crate) fn sync_file(file: &File) -> io::Result<()> {
@@ -185,21 +222,34 @@ pub(crate) fn sync_file(file: &File) -> io::Result<()> {
     Ok(())
 }
 fn sync_dir(path: &Path) -> io::Result<()> {
-    File::open(path)?.sync_all()
+    #[cfg(unix)]
+    {
+        File::open(path)?.sync_all()
+    }
+    #[cfg(windows)]
+    {
+        // Opening a directory for syncing is not allowed; syncing any file
+        // inside flushes the volume metadata Windows keeps for the tree.
+        let marker = path.join("blobs");
+        if marker.is_dir()
+            && let Ok(entries) = fs::read_dir(&marker)
+        {
+            for entry in entries.flatten() {
+                if let Ok(file) = File::open(entry.path()) {
+                    let _ = file.sync_all();
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl OperationStore {
     pub fn open(state_dir: &Path, project_root: &Path) -> Result<Self> {
         mkdir(state_dir)?;
-        let dir = fs::canonicalize(state_dir)?;
-        let lock_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(dir.join(STORE_LOCK))?;
+        let dir = crate::plain_canonical(fs::canonicalize(state_dir)?);
+        let lock_file = open_private(&dir.join(STORE_LOCK), true)?;
         let deadline = Instant::now() + LOCK_PATIENCE;
         while !try_lock(&lock_file)? {
             if Instant::now() >= deadline {
@@ -212,14 +262,7 @@ impl OperationStore {
         let owner = OwnerLock(lock_file);
         let path = dir.join(DATABASE);
         let existed = path.try_exists()?;
-        let db_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)?;
+        let db_file = open_private(&path, true)?;
         // Existing empty/truncated files are damage, not permission to initialize.
         if existed && db_file.metadata()?.len() == 0 {
             return Err(StoreError::Unreadable(
@@ -587,10 +630,7 @@ impl OperationStore {
     }
 
     pub fn verify_blob(&self, blob: &BlobRef) -> Result<()> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(self.blob_path(blob)?)?;
+        let mut file = open_read_private(&self.blob_path(blob)?)?;
         if !file.metadata()?.is_file() || file.metadata()?.len() != blob.bytes {
             return Err(StoreError::Unreadable("blob length/type mismatch".into()));
         }
@@ -616,10 +656,7 @@ impl OperationStore {
                 "output blob exceeds chunk bound".into(),
             ));
         }
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(self.blob_path(blob)?)?;
+        let mut file = open_read_private(&self.blob_path(blob)?)?;
         let mut bytes = Vec::new();
         (&mut file).take(blob.bytes + 1).read_to_end(&mut bytes)?;
         if bytes.len() as u64 != blob.bytes || crate::hex(&Sha256::digest(&bytes)) != blob.sha256 {
@@ -894,7 +931,7 @@ mod tests {
         fs::create_dir(&root).unwrap();
         let core = Core::open(
             CoreConfig::new(&root, tmp.path().join("state"))
-                .executor(Executor::new("sh", "/bin/sh")),
+                .executor(Executor::new("sh", crate::os::fixture_sh_program())),
         )
         .unwrap();
         let request = RunRequest {
@@ -931,7 +968,10 @@ mod tests {
     #[test]
     fn sqlite_full_rolls_back_acceptance_before_any_native_dispatch() {
         let (_tmp, core, mut request) = fixture();
-        request.args.push("x".repeat(63 * 1024));
+        // One page is 4 KiB; an argument near a page boundary overflows the
+        // database past its max page count. Windows CreateProcess caps one
+        // command line at 32 KiB, so the argument stays below that here.
+        request.args.push("x".repeat(24 * 1024));
         {
             let inner = lock(&core.store.inner);
             let pages: u64 = inner

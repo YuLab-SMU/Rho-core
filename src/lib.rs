@@ -11,13 +11,13 @@
 //! limits and failure semantics are in [`CONTRACT`] (`docs/MANAGED-RUN.md`);
 //! `examples/managed_run.rs` is a runnable caller.
 
-#[cfg(not(unix))]
-compile_error!("rho-core currently supports Unix platforms only");
-
 mod activity;
 mod error;
 mod fault;
-mod os;
+/// Platform process primitives; the Host binary uses the user-sid and
+/// wide-string helpers for its named-pipe peer check.
+#[doc(hidden)]
+pub mod os;
 mod record;
 mod run;
 mod store;
@@ -229,12 +229,13 @@ struct Registry {
 impl Core {
     pub fn open(config: CoreConfig) -> Result<Self, OpenError> {
         let error = |message: String| OpenError(message);
-        let project_root = fs::canonicalize(&config.project_root).map_err(|e| {
-            error(format!(
-                "project root `{}`: {e}",
-                config.project_root.display()
-            ))
-        })?;
+        let project_root =
+            plain_canonical(fs::canonicalize(&config.project_root).map_err(|e| {
+                error(format!(
+                    "project root `{}`: {e}",
+                    config.project_root.display()
+                ))
+            })?);
         if !project_root.is_dir() {
             return Err(error(format!(
                 "project root `{}` is not a directory",
@@ -647,13 +648,15 @@ fn resolve_workdir(project_root: &Path, workdir: &Path) -> Result<PathBuf, Workd
     if workdir.as_os_str().is_empty() || workdir.is_absolute() {
         return Err(WorkdirProblem::NotRelative);
     }
-    let resolved = fs::canonicalize(project_root.join(workdir)).map_err(|error| {
-        if error.kind() == io::ErrorKind::NotFound {
-            WorkdirProblem::NotFound
-        } else {
-            WorkdirProblem::Unreadable(error.to_string())
-        }
-    })?;
+    let resolved = plain_canonical(fs::canonicalize(project_root.join(workdir)).map_err(
+        |error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                WorkdirProblem::NotFound
+            } else {
+                WorkdirProblem::Unreadable(error.to_string())
+            }
+        },
+    )?);
     if !resolved.starts_with(project_root) {
         return Err(WorkdirProblem::OutsideProject { resolved });
     }
@@ -661,6 +664,35 @@ fn resolve_workdir(project_root: &Path, workdir: &Path) -> Result<PathBuf, Workd
         return Err(WorkdirProblem::NotADirectory);
     }
     Ok(resolved)
+}
+
+/// The canonical path in plain form. `fs::canonicalize` returns `\\?\C:\...`
+/// on Windows; child processes and SQLite accept it, but MSYS programs such as
+/// Git Bash's `sh` do not, and runs regularly execute such programs. Stripping
+/// the prefix keeps the canonical (symlink-free) resolution while presenting
+/// the ordinary form. A path at or beyond the extension limit keeps its
+/// prefix, where it is required.
+pub(crate) fn plain_canonical(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        // The extended-path prefix; a trailing-backslash Rust literal cannot
+        // be written raw, so these are escaped string literals.
+        const UNC: &str = "\\\\?\\UNC\\";
+        const PLAIN: &str = "\\\\?\\";
+        let text = path.as_os_str().to_string_lossy().into_owned();
+        if let Some(rest) = text.strip_prefix(UNC) {
+            return PathBuf::from(format!("\\\\{rest}"));
+        }
+        if text.starts_with(PLAIN) && text.len() <= 248 {
+            PathBuf::from(&text[PLAIN.len()..])
+        } else {
+            path
+        }
+    }
+    #[cfg(unix)]
+    {
+        path
+    }
 }
 
 fn instance_token() -> String {

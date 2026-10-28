@@ -245,8 +245,15 @@ fn crash_before_and_after_commit_preserves_the_original_source_position() {
             .env("RHO_CORE_CRASH_AT", point)
             .status()
             .unwrap();
-        use std::os::unix::process::ExitStatusExt;
-        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(status.signal(), Some(9));
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(status.code(), Some(0x4000_000F));
+        }
         let core = open(dir.path(), Limits::default());
         assert_eq!(core.list_activity("a").unwrap()[0].next_sequence, expected);
         let receipt = core.append_activity("a", "session-a", &[event(1)]).unwrap();

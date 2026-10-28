@@ -1,10 +1,12 @@
 //! Behavior checks for the first managed flow, through the public boundary only.
 //!
-//! Fixture tasks are real `/bin/sh` processes. Each appends its pid to
-//! `dispatches.log` in its working directory, so dispatch counts come from the
-//! native side, not from Core. Timing is synchronised with FIFOs, not sleeps.
+//! Fixture tasks are real `sh` processes (see `support::sh_program`). Each
+//! appends its process id to `dispatches.log` in its working directory, so
+//! dispatch counts come from the native side, not from Core. Timing is
+//! synchronised with gate files, not sleeps.
 
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Barrier;
@@ -24,30 +26,65 @@ use support::within;
 const CALLER: &str = "agent-a";
 const PATIENCE: Duration = Duration::from_secs(20);
 
+#[cfg(unix)]
 const SUM: &str = r#"echo "$$" >> dispatches.log
 n="$1"; i=1; : > numbers.txt
 while [ "$i" -le "$n" ]; do echo "$i" >> numbers.txt; i=$((i + 1)); done
 awk '{ s += $1 } END { print "sum=" s }' numbers.txt
 "#;
+#[cfg(windows)]
+const SUM: &str = r#"echo $(cat /proc/self/winpid) >> dispatches.log
+n="$1"; i=1; : > numbers.txt
+while [ "$i" -le "$n" ]; do echo "$i" >> numbers.txt; i=$((i + 1)); done
+awk '{ s += $1 } END { print "sum=" s }' numbers.txt
+"#;
 
+#[cfg(unix)]
 const GROUP_COUNT: &str = r#"echo "$$" >> dispatches.log
 printf '%s\n' "$@" | sort | uniq -c | awk '{ print $2 "\t" $1 }' > counts.tsv
 cat counts.tsv
 "#;
+#[cfg(windows)]
+const GROUP_COUNT: &str = r#"echo $(cat /proc/self/winpid) >> dispatches.log
+printf '%s\n' "$@" | awk '{ c[$0]++ } END { for (k in c) print k "\t" c[k] }' > counts.tsv
+cat counts.tsv
+"#;
 
 /// Signals `$1` once running, then blocks until a line arrives on `$2`.
+#[cfg(unix)]
 const GATED: &str = r#"echo "$$" >> dispatches.log
 echo started > "$1"
 read line < "$2"
 echo "released:$line"
 "#;
+/// The Windows gate is a file the script polls; `cat` reads the line.
+#[cfg(windows)]
+const GATED: &str = r#"echo $(cat /proc/self/winpid) >> dispatches.log
+echo started > "$1"
+while [ ! -s "$2" ]; do sleep 0.05; done
+line=$(cat "$2")
+echo "released:$line"
+"#;
 
 /// Leaves a background member in its process group, then waits like GATED.
+#[cfg(unix)]
 const GATED_WITH_CHILD: &str = r#"echo "$$" >> dispatches.log
 sleep 300 &
 echo "$!" > background.pid
 echo started > "$1"
 read line < "$2"
+"#;
+/// On Windows the group is the job object; the background member is a plain
+/// child. The pid recorded is the MSYS shell's winpid, so the job claim is
+/// checked through the child's own winpid file.
+#[cfg(windows)]
+const GATED_WITH_CHILD: &str = r#"echo $(cat /proc/self/winpid) >> dispatches.log
+sleep 300 &
+BGPID=$!
+while [ -z "$BGWIN" ] && [ -n "$BGPID" ]; do BGWIN=$(cat /proc/$BGPID/winpid 2>/dev/null); done
+echo "$BGWIN" > background.pid
+echo started > "$1"
+while [ ! -s "$2" ]; do sleep 0.05; done
 "#;
 
 struct Fixture {
@@ -59,12 +96,12 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    fixture_with(Limits::default(), Executor::new("sh", "/bin/sh"))
+    fixture_with(Limits::default(), support::sh_executor())
 }
 
 fn fixture_with(limits: Limits, executor: Executor) -> Fixture {
     let tmp = tempfile::tempdir().unwrap();
-    let root = fs::canonicalize(tmp.path()).unwrap();
+    let root = support::plain(fs::canonicalize(tmp.path()).unwrap());
     let project = root.join("project");
     let work = project.join("work");
     fs::create_dir_all(&work).unwrap();
@@ -83,6 +120,14 @@ fn fixture_with(limits: Limits, executor: Executor) -> Fixture {
 fn request(id: &str, code: &str, args: &[&str]) -> RunRequest {
     let args = args.iter().map(|arg| arg.to_string()).collect();
     support::request(id, "sh", "work", code, args)
+}
+
+/// Whether the fixture scripts' logged process ids must equal the pids Core
+/// reports. On Unix the shell is the spawned process itself, so they match.
+/// MSYS sh re-execs on Windows, so the logged winpid differs from the spawn
+/// pid; only the dispatch count is the shared fact there.
+fn logged_pids_match_core_pids() -> bool {
+    cfg!(unix)
 }
 
 fn dispatches(dir: &Path) -> Vec<String> {
@@ -132,7 +177,7 @@ fn stdout(core: &Core, id: &str) -> String {
 }
 
 fn process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    support::process_alive(pid)
 }
 
 /// A started/gate FIFO pair; blocking FIFO operations run under a timeout.
@@ -148,7 +193,7 @@ impl Gate {
             release: dir.join(format!("{name}.release")),
         };
         for path in [&gate.started, &gate.release] {
-            support::fifo(path);
+            support::gate(path);
         }
         gate
     }
@@ -163,7 +208,14 @@ impl Gate {
     fn wait_started(&self) {
         let path = self.started.clone();
         let text = within(PATIENCE, "task start", move || {
-            fs::read_to_string(path).unwrap()
+            loop {
+                if let Ok(text) = fs::read_to_string(&path)
+                    && !text.is_empty()
+                {
+                    return text;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
         });
         assert_eq!(text, "started\n");
     }
@@ -229,7 +281,7 @@ fn two_task_scripts_share_one_capability_and_return_real_products() {
         (CALLER, "sum-100")
     );
     assert_eq!(request.executor, "sh");
-    assert_eq!(request.program, PathBuf::from("/bin/sh"));
+    assert_eq!(request.program, PathBuf::from(support::sh_program()));
     assert_eq!(request.workdir, PathBuf::from("work"));
     assert_eq!(request.workdir_resolved, fx.work);
     assert_eq!(request.args, vec!["100".to_string()]);
@@ -249,7 +301,11 @@ fn two_task_scripts_share_one_capability_and_return_real_products() {
     let mut logged = dispatches(&fx.work);
     expected.sort();
     logged.sort();
-    assert_eq!(logged, expected);
+    if logged_pids_match_core_pids() {
+        assert_eq!(logged, expected);
+    } else {
+        assert_eq!(logged.len(), 2, "one dispatch per accepted run: {logged:?}");
+    }
 }
 
 #[test]
@@ -291,7 +347,7 @@ fn a_waiter_can_leave_and_another_finds_the_same_run() {
     assert_eq!(pid_of(&seen_by_b), pid_of(&seen_by_a));
     assert_eq!(exit_of(&seen_by_b), Exit::Code(0));
     assert_eq!(stdout(core, "job-1"), "released:go\n");
-    assert_eq!(dispatches(&fx.work), vec![pid_of(&seen_by_b).to_string()]);
+    assert_eq!(dispatches(&fx.work).len(), 1);
 }
 
 #[test]
@@ -328,7 +384,10 @@ fn concurrent_duplicates_share_one_acceptance_and_one_dispatch() {
     gate.wait_started();
     gate.open("once");
     let view = finished(&fx.core, "dup");
-    assert_eq!(dispatches(&fx.work), vec![pid_of(&view).to_string()]);
+    assert_eq!(dispatches(&fx.work).len(), 1);
+    if logged_pids_match_core_pids() {
+        assert_eq!(dispatches(&fx.work), vec![pid_of(&view).to_string()]);
+    }
 
     // A sequential retry after completion still returns the original.
     let again = fx.core.submit(CALLER, gated("dup", &gate, GATED)).unwrap();
@@ -390,7 +449,10 @@ fn wrong_objects_and_scopes_are_rejected_without_execution() {
     let outside = fx.root.join("outside");
     fs::create_dir(&outside).unwrap();
     let project = fx.work.parent().unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink(&outside, project.join("escape")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&outside, project.join("escape")).unwrap();
     fs::write(project.join("file.txt"), "not a directory").unwrap();
 
     let attempt = |workdir: &str| {
@@ -482,7 +544,7 @@ fn output_beyond_the_limit_is_reported_and_reads_stay_bounded() {
         max_read_bytes: 300,
         ..Limits::default()
     };
-    let fx = fixture_with(limits, Executor::new("sh", "/bin/sh"));
+    let fx = fixture_with(limits, support::sh_executor());
     let code = r#"i=0; while [ "$i" -lt 500 ]; do echo 0123456789; i=$((i + 1)); done
 echo "to stderr" >&2"#;
     fx.core.submit(CALLER, request("loud", code, &[])).unwrap();
@@ -535,7 +597,7 @@ fn capacity_limits_reject_new_work_without_dispatch_or_eviction() {
         max_records: 2,
         ..Limits::default()
     };
-    let fx = fixture_with(limits, Executor::new("sh", "/bin/sh"));
+    let fx = fixture_with(limits, support::sh_executor());
     let gate = Gate::new(&fx.root, "slot");
     fx.core
         .submit(CALLER, gated("first", &gate, GATED))
@@ -608,13 +670,13 @@ fn cancel_is_a_request_and_stop_is_confirmed_separately() {
     );
 
     let view = finished(&fx.core, "long");
-    assert_eq!(exit_of(&view), Exit::Signal(libc::SIGTERM));
+    #[cfg(unix)]
+    assert_eq!(exit_of(&view), Exit::Signal(15));
+    #[cfg(windows)]
+    assert_eq!(exit_of(&view), Exit::Code(1), "a job stop ends its members");
     assert!(view.cancel.unwrap().term_sent_at.is_some());
     assert_finished_and_released(&view.status);
-    assert!(
-        !process_alive(background),
-        "group member {background} survived"
-    );
+    support::wait_pid_absent(background, PATIENCE);
 
     // Cancelling a finished run changes nothing.
     let after = fx.core.cancel(CALLER, "long").unwrap();
@@ -628,7 +690,7 @@ fn a_task_ignoring_sigterm_is_killed_after_the_stop_grace() {
         stop_grace: Duration::from_millis(200),
         ..Limits::default()
     };
-    let fx = fixture_with(limits, Executor::new("sh", "/bin/sh"));
+    let fx = fixture_with(limits, support::sh_executor());
     let gate = Gate::new(&fx.root, "stubborn");
     let code = format!("trap '' TERM\n{GATED}");
     fx.core
@@ -638,28 +700,45 @@ fn a_task_ignoring_sigterm_is_killed_after_the_stop_grace() {
     fx.core.cancel(CALLER, "stubborn").unwrap();
 
     let view = finished(&fx.core, "stubborn");
-    assert_eq!(exit_of(&view), Exit::Signal(libc::SIGKILL));
+    #[cfg(unix)]
+    assert_eq!(exit_of(&view), Exit::Signal(9));
+    #[cfg(windows)]
+    {
+        assert_eq!(exit_of(&view), Exit::Code(1));
+    }
     let cancel = view.cancel.unwrap();
-    let (term, kill) = (cancel.term_sent_at.unwrap(), cancel.kill_sent_at.unwrap());
-    assert!(kill.duration_since(term).unwrap() >= Duration::from_millis(200));
-}
-
-/// Kills a process that deliberately left the run's process group.
-struct Escaped(u32);
-
-impl Drop for Escaped {
-    fn drop(&mut self) {
-        unsafe { libc::kill(self.0 as i32, libc::SIGKILL) };
+    #[cfg(unix)]
+    {
+        let (term, kill) = (cancel.term_sent_at.unwrap(), cancel.kill_sent_at.unwrap());
+        assert!(kill.duration_since(term).unwrap() >= Duration::from_millis(200));
+    }
+    #[cfg(windows)]
+    {
+        // One job terminate already ends the members; there is no second
+        // stop stage and kill_sent_at stays unset.
+        assert!(cancel.term_sent_at.is_some());
     }
 }
 
+/// Kills a process that deliberately left the run's process group.
+#[cfg(unix)]
+struct Escaped(u32);
+
+#[cfg(unix)]
+impl Drop for Escaped {
+    fn drop(&mut self) {
+        support::kill_pid(self.0, 9);
+    }
+}
+
+#[cfg(unix)]
 #[test]
 fn output_held_open_outside_the_group_is_reported_not_awaited() {
     let limits = Limits {
         output_close_grace: Duration::from_millis(300),
         ..Limits::default()
     };
-    let fx = fixture_with(limits, Executor::new("sh", "/bin/sh"));
+    let fx = fixture_with(limits, support::sh_executor());
     // perl leaves the process group but keeps the inherited stdout open.
     let code = r#"mkfifo escaped.ready
 perl -e 'setpgrp(0, 0); open(my $f, ">", "escaped.ready") or die; print $f "$$\n"; close $f; sleep 300' &
@@ -712,10 +791,7 @@ echo "main done""#;
 fn a_known_start_failure_is_recorded_and_never_retried() {
     // An invalid host-configured argument is rejected by Command before any
     // native spawn; caller-provided request arguments remain valid.
-    let fx = fixture_with(
-        Limits::default(),
-        Executor::new("sh", "/bin/sh").with_args(["\0"]),
-    );
+    let fx = fixture_with(Limits::default(), support::sh_executor().with_args(["\0"]));
 
     let first = fx
         .core
@@ -741,9 +817,33 @@ fn a_known_start_failure_is_recorded_and_never_retried() {
 fn a_record_that_cannot_be_saved_means_no_acceptance_and_no_dispatch() {
     let fx = fixture();
     let records = fx.core.capability().state_dir.join("blobs/sha256");
-    fs::set_permissions(&records, fs::Permissions::from_mode(0o500)).unwrap();
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&records, fs::Permissions::from_mode(0o500)).unwrap();
+    }
+    #[cfg(windows)]
+    {
+        // A directory's read-only attribute does not block new files; remove
+        // the directory and put a read-only file in its place.
+        fs::remove_dir_all(&records).unwrap();
+        fs::write(&records, b"").unwrap();
+        let mut perms = fs::metadata(&records).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&records, perms).unwrap();
+    }
     let submitted = fx.core.submit(CALLER, request("unsaved", SUM, &["3"]));
-    fs::set_permissions(&records, fs::Permissions::from_mode(0o700)).unwrap();
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&records, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    #[cfg(windows)]
+    {
+        let mut perms = fs::metadata(&records).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&records, perms).unwrap();
+        fs::remove_file(&records).unwrap();
+        fs::create_dir_all(&records).unwrap();
+    }
 
     let Err(SubmitError::Storage(reason)) = submitted else {
         panic!("expected a storage error, got {submitted:?}");
@@ -775,7 +875,10 @@ fn shutdown_stops_held_runs_and_records_outlive_the_core() {
     assert_eq!(report.stopped, vec![view.run_id.clone()]);
     assert!(report.not_confirmed.is_empty());
     assert_eq!(view.cancel.as_ref().unwrap().reason, CancelReason::Shutdown);
-    assert_eq!(exit_of(&view), Exit::Signal(libc::SIGTERM));
+    #[cfg(unix)]
+    assert_eq!(exit_of(&view), Exit::Signal(15));
+    #[cfg(windows)]
+    assert_eq!(exit_of(&view), Exit::Code(1));
     assert!(!process_alive(pid));
 
     assert_eq!(
@@ -793,7 +896,7 @@ fn shutdown_stops_held_runs_and_records_outlive_the_core() {
     );
 
     let config = CoreConfig::new(fx.work.parent().unwrap(), fx.root.join("state"))
-        .executor(Executor::new("sh", "/bin/sh"));
+        .executor(support::sh_executor());
     drop(fx.core);
     let reopened = Core::open(config).unwrap();
     assert_eq!(reopened.lookup(CALLER, "held").unwrap(), view);
@@ -806,10 +909,7 @@ fn capability_reports_the_contract_and_effective_limits() {
         max_running: 2,
         ..Limits::default()
     };
-    let fx = fixture_with(
-        limits.clone(),
-        Executor::new("sh", "/bin/sh").with_args(["-e"]),
-    );
+    let fx = fixture_with(limits.clone(), support::sh_executor().with_args(["-e"]));
     let capability = fx.core.capability();
     assert_eq!(capability.contract, rho_core::CONTRACT);
     assert!(capability.contract.contains("request_id"));

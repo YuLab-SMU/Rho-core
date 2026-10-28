@@ -6,15 +6,12 @@
 //! line. A client that has not received a `ready` greeting has sent nothing.
 
 use std::io::{self, BufRead, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 use rho_core::{ActivityEvent, ActivitySource, Limits};
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL: u64 = 1;
-/// The socket's name inside the host's state directory.
-pub const SOCKET_NAME: &str = "host.sock";
 /// Bound on each greeting, request and reply transfer, and on an idle client.
 pub const IO_TIMEOUT: Duration = Duration::from_secs(10);
 /// Longest wait one request may ask for.
@@ -156,7 +153,8 @@ pub fn read_line(reader: &mut impl BufRead, max_bytes: usize) -> io::Result<Line
     })
 }
 
-pub fn send(mut stream: &UnixStream, message: &impl Serialize) -> io::Result<()> {
+/// Writes one serialized line to the stream.
+pub fn send(mut stream: impl Write, message: &impl Serialize) -> io::Result<()> {
     let mut line = serde_json::to_vec(message)?;
     line.push(b'\n');
     stream.write_all(&line)?;

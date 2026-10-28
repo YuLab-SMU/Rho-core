@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let project = tmp.path().join("project");
     fs::create_dir_all(project.join("analysis"))?;
     let config = CoreConfig::new(&project, tmp.path().join("state"))
-        .executor(Executor::new("sh", "/bin/sh"));
+        .executor(Executor::new("sh", rho_core::os::fixture_sh_program()));
     let core = Core::open(config.clone())?;
     let capability = core.capability();
     println!(

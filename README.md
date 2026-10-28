@@ -6,7 +6,7 @@ Rho Core 为 Agent 的工作环境补足需要管理的本地执行：让一次�
 阅读文档、编写与组合代码、直接使用已有的 CLI、SDK 和 MCP；只有存在明确执行缺口的
 动作才进入 Core。模型循环、协议兼容与科研方法由各自的 Owner 承担。
 
-`rho-core` 是仅支持 Unix 的 Rust 库与二进制。受理与执行事实保存在 SQLite 事务中，
+`rho-core` 是支持 Unix 与 Windows 的 Rust 库与二进制。受理与执行事实保存在 SQLite 事务中，
 脚本与输出是内容寻址文件；`rho-core serve` 常驻宿主让 Agent 多次独立的 shell 调用使用
 同一组受管运行。尚无公共 SDK、网络或 MCP 接入。各部分的现状见 [进度](docs/PROGRESS.md)。
 
@@ -38,8 +38,9 @@ Rho Core 为 Agent 的工作环境补足需要管理的本地执行：让一次�
 
 ## 构建与检查
 
-工具链由 [`rust-toolchain.toml`](rust-toolchain.toml) 固定。回归使用 `/bin/sh`、
-`mkfifo` 与 `perl`，并在临时目录中创建和清理夹具进程。Cargo 命令依次运行，不并行：
+工具链由 [`rust-toolchain.toml`](rust-toolchain.toml) 固定。回归在 Unix 上使用 `/bin/sh`、
+`mkfifo` 与 `perl`，在 Windows 上使用 Git Bash 的 MSYS `sh.exe`（含其 `awk`/`perl`），
+并在临时目录中创建和清理夹具进程。Cargo 命令依次运行，不并行：
 
 ```sh
 cargo fmt --check
@@ -69,6 +70,9 @@ sudo python3 tests/linux_platform.py verify-reboot --binary target/debug/rho-cor
 再检验原身份、释放与删除事实；不要求任意两次观察的运行时长都降低。
 macOS 跨 UID 检查与独立 VM 故障实验见 [`tests/macos_platform.py`](tests/macos_platform.py)
 和 [故障验证说明](tests/independent_vm.md)。
+
+Windows（`x86_64-pc-windows-msvc`）在本机直接运行以上 Cargo 命令验证。平台语义的
+映射与差异见 [Windows 支持](docs/WINDOWS.md)。
 
 按用户决定（2026-10-10）暂不配置 CI；提交前在本地依次运行以上命令。各平台实际验证过
 的范围见 [进度](docs/PROGRESS.md#已验证的范围)。

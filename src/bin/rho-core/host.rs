@@ -1,15 +1,13 @@
 //! `rho-core serve`: holds one Core for a project so that runs outlive the
 //! client invocations that submit, wait for, read and cancel them.
 
-use std::fs;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, Write};
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
-use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -20,6 +18,7 @@ use rho_core::{
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
+use crate::ipc::{self, IpcListener, IpcStream};
 use crate::wire::{self, Greeting, Line, Request, WireStream};
 
 const DEFAULT_MAX_CONNECTIONS: usize = 16;
@@ -150,11 +149,10 @@ fn serve(options: Options) -> Result<(), String> {
     // Before Core exists: a signal during startup stops the host once it is up.
     let signals = Signals::install()?;
     let core = Core::open(options.config).map_err(|e| e.to_string())?;
-    // This host now holds the state dir's lock: no live host uses this socket path.
+    // This host now holds the state dir's lock: no live host uses this pipe name.
     let capability = core.capability();
-    let socket = capability.state_dir.join(wire::SOCKET_NAME);
+    let socket = ipc::pipe_name(&capability.state_dir);
     let listener = listen(&socket)?;
-    let bound = fs::metadata(&socket).map_err(|e| e.to_string())?;
     let host = Arc::new(Host {
         max_request_bytes: wire::max_request_bytes(&capability.limits),
         core,
@@ -179,13 +177,8 @@ fn serve(options: Options) -> Result<(), String> {
     // A failed signal read stops the host as a signal would; it is reported.
     let signal = signals.wait().map_err(|e| e.to_string());
     host.stopping.store(true, Ordering::SeqCst);
-    // Wakes the accept thread, which then closes each new connection unanswered.
-    drop(UnixStream::connect(&host.socket));
-    if let Ok(current) = fs::symlink_metadata(&host.socket)
-        && (current.dev(), current.ino()) == (bound.dev(), bound.ino())
-    {
-        let _ = fs::remove_file(&host.socket);
-    }
+    // A named pipe vanishes with its server; the accept thread sees stopping
+    // and leaves, and there is no filesystem name to remove.
     let report = host.core.shutdown();
     let deadline = Instant::now() + REQUEST_GRACE;
     while host.connections.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
@@ -201,25 +194,10 @@ fn serve(options: Options) -> Result<(), String> {
     Ok(())
 }
 
-/// Replaces only a socket left by an earlier host of this state dir.
-fn listen(socket: &Path) -> Result<UnixListener, String> {
-    match fs::symlink_metadata(socket) {
-        Ok(meta) if meta.file_type().is_socket() => fs::remove_file(socket)
-            .map_err(|e| format!("cannot remove stale socket `{}`: {e}", socket.display()))?,
-        Ok(_) => {
-            return Err(format!(
-                "`{}` exists and is not a socket; not replacing it",
-                socket.display()
-            ));
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("cannot inspect `{}`: {e}", socket.display())),
-    }
-    let listener = UnixListener::bind(socket)
-        .map_err(|e| format!("cannot listen on `{}`: {e}", socket.display()))?;
-    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))
-        .map_err(|e| format!("cannot restrict `{}`: {e}", socket.display()))?;
-    Ok(listener)
+/// Binds the host's named pipe. A pipe name left by a live host is refused by
+/// the API itself; the state-dir lock already guarantees single-host use.
+fn listen(socket: &Path) -> Result<IpcListener, String> {
+    IpcListener::bind(socket).map_err(|e| format!("cannot listen on `{}`: {e}", socket.display()))
 }
 
 fn print_line(value: &Value) {
@@ -238,13 +216,11 @@ impl Drop for Slot {
 }
 
 impl Host {
-    fn accept(self: Arc<Self>, listener: UnixListener) {
-        for stream in listener.incoming() {
-            if self.stopping.load(Ordering::SeqCst) {
-                return;
-            }
-            match stream {
-                Ok(stream) => self.admit(stream),
+    fn accept(self: Arc<Self>, mut listener: IpcListener) {
+        while !self.stopping.load(Ordering::SeqCst) {
+            match listener.accept(ACCEPT_RETRY) {
+                Ok(Some(stream)) => self.admit(stream),
+                Ok(None) => {}
                 Err(error) => {
                     eprintln!("rho-core serve: accept failed: {error}");
                     thread::sleep(ACCEPT_RETRY);
@@ -253,7 +229,7 @@ impl Host {
         }
     }
 
-    fn admit(self: &Arc<Self>, stream: UnixStream) {
+    fn admit(self: &Arc<Self>, mut stream: IpcStream) {
         let reserved = self
             .connections
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |open| {
@@ -270,6 +246,7 @@ impl Host {
             );
             return;
         }
+        let _ = stream;
         let slot = Slot(Arc::clone(self));
         let host = Arc::clone(self);
         // On failure the closure, with its stream and slot, is dropped: the
@@ -282,7 +259,7 @@ impl Host {
         }
     }
 
-    fn connection(&self, stream: UnixStream, _slot: Slot) {
+    fn connection(&self, mut stream: IpcStream, _slot: Slot) {
         let _ = stream.set_read_timeout(Some(wire::IO_TIMEOUT));
         let _ = stream.set_write_timeout(Some(wire::IO_TIMEOUT));
         if let Err(reason) = check_peer(&stream) {
@@ -493,107 +470,78 @@ fn activity_error(error: rho_core::ActivityError) -> Value {
     failure(error.kind(), error.to_string())
 }
 
-/// Only processes of this host's user may use it; the socket mode is 0600 too.
-fn check_peer(stream: &UnixStream) -> Result<(), String> {
-    // SAFETY: geteuid has no preconditions.
-    let own = unsafe { libc::geteuid() };
-    match peer_uid(stream) {
-        Ok(uid) if uid == own => Ok(()),
-        Ok(uid) => Err(format!("peer uid {uid} is not the host's uid {own}")),
-        Err(error) => Err(format!("peer uid unavailable: {error}")),
-    }
+/// Only processes of this host's user may use it.
+fn check_peer(stream: &IpcStream) -> Result<(), String> {
+    stream.peer_is_own_user()
 }
 
-#[cfg(target_os = "macos")]
-fn peer_uid(stream: &UnixStream) -> io::Result<libc::uid_t> {
-    let (mut uid, mut gid) = (0, 0);
-    // SAFETY: a connected socket descriptor and two valid out-pointers.
-    if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(uid)
+/// A stopping signal: SIGTERM/SIGINT/SIGHUP on Unix, the console ctrl events
+/// (Ctrl-C, Ctrl-Break, close, logoff) on Windows. The wait blocks until one
+/// arrives; an inherited ignored signal stays ignored, as on Unix.
+struct Signals {
+    #[cfg(unix)]
+    file: std::fs::File,
 }
 
-#[cfg(target_os = "linux")]
-fn peer_uid(stream: &UnixStream) -> io::Result<libc::uid_t> {
-    // SAFETY: zeroed ucred is a valid out-parameter of the size passed.
-    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    // SAFETY: a connected socket descriptor and a correctly sized buffer.
-    let result = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&mut cred as *mut libc::ucred).cast(),
-            &mut len,
-        )
-    };
-    if result != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(cred.uid)
-}
+#[cfg(unix)]
+mod signal_impl {
+    //! SIGTERM, SIGINT and SIGHUP, reported by a handler as bytes on a pipe. No
+    //! signal mask changes: std passes this process's mask on to runs, and a run
+    //! with SIGTERM blocked could only be stopped by SIGKILL. Exec resets the
+    //! handler, and the pipe is close-on-exec, so runs start with default handling.
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn peer_uid(_stream: &UnixStream) -> io::Result<libc::uid_t> {
-    Err(io::Error::other(
-        "peer credentials are not implemented here",
-    ))
-}
+    use std::fs;
+    use std::io;
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+    use std::sync::atomic::{AtomicI32, Ordering};
 
-/// Write end of the pipe that termination signals are reported on.
-static SIGNAL_PIPE: AtomicI32 = AtomicI32::new(-1);
+    use super::Signals;
 
-extern "C" fn report_signal(signal: libc::c_int) {
-    let byte = signal as u8;
-    // SAFETY: only async-signal-safe calls; errno is kept for the interrupted code.
-    unsafe {
-        let errno = errno();
-        let saved = errno.map(|errno| *errno);
-        libc::write(
-            SIGNAL_PIPE.load(Ordering::Relaxed),
-            (&byte as *const u8).cast(),
-            1,
-        );
-        if let (Some(errno), Some(saved)) = (errno, saved) {
-            *errno = saved;
+    /// Write end of the pipe that termination signals are reported on.
+    static SIGNAL_PIPE: AtomicI32 = AtomicI32::new(-1);
+
+    extern "C" fn report_signal(signal: libc::c_int) {
+        let byte = signal as u8;
+        // SAFETY: only async-signal-safe calls; errno is kept for the interrupted code.
+        unsafe {
+            let errno = errno_location();
+            let saved = errno.map(|errno| *errno);
+            libc::write(
+                SIGNAL_PIPE.load(Ordering::Relaxed),
+                (&byte as *const u8).cast(),
+                1,
+            );
+            if let (Some(errno), Some(saved)) = (errno, saved) {
+                *errno = saved;
+            }
         }
     }
-}
 
-#[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
-unsafe fn errno() -> Option<*mut libc::c_int> {
-    // SAFETY: returns this thread's errno location.
-    Some(unsafe { libc::__error() })
-}
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+    unsafe fn errno_location() -> Option<*mut libc::c_int> {
+        // SAFETY: returns this thread's errno location.
+        Some(unsafe { libc::__error() })
+    }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
-unsafe fn errno() -> Option<*mut libc::c_int> {
-    // SAFETY: returns this thread's errno location.
-    Some(unsafe { libc::__errno_location() })
-}
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    unsafe fn errno_location() -> Option<*mut libc::c_int> {
+        // SAFETY: returns this thread's errno location.
+        Some(unsafe { libc::__errno_location() })
+    }
 
-#[cfg(not(any(
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "freebsd",
-    target_os = "linux",
-    target_os = "android"
-)))]
-unsafe fn errno() -> Option<*mut libc::c_int> {
-    None
-}
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "android"
+    )))]
+    unsafe fn errno_location() -> Option<*mut libc::c_int> {
+        None
+    }
 
-/// SIGTERM, SIGINT and SIGHUP, reported by a handler as bytes on a pipe. No
-/// signal mask changes: std passes this process's mask on to runs, and a run
-/// with SIGTERM blocked could only be stopped by SIGKILL. Exec resets the
-/// handler, and the pipe is close-on-exec, so runs start with default handling.
-struct Signals(fs::File);
-
-impl Signals {
     /// Signals inherited as ignored (as under `nohup`) stay ignored.
-    fn install() -> Result<Self, String> {
+    pub(super) fn install() -> Result<Signals, String> {
         let failed = |what: &str| format!("cannot {what}: {}", io::Error::last_os_error());
         let mut fds = [0; 2];
         // SAFETY: a valid two-element array for the new descriptors.
@@ -633,20 +581,110 @@ impl Signals {
                 }
             }
         }
-        Ok(Self(fs::File::from(read)))
+        // SAFETY: adopting the read descriptor this module owns for the
+        // process lifetime; the write end keeps the pipe open.
+        let file = unsafe { fs::File::from(OwnedFd::from_raw_fd(fds[0])) };
+        Ok(Signals { file })
     }
 
     /// Blocks until a termination signal arrives and returns its number.
-    fn wait(&self) -> io::Result<i32> {
+    pub(super) fn wait(signals: &Signals) -> io::Result<i32> {
         let mut byte = [0u8; 1];
         loop {
-            match (&self.0).read(&mut byte) {
+            match (&signals.file).read(&mut byte) {
                 Ok(1) => return Ok(i32::from(byte[0])),
                 Ok(_) => return Err(io::ErrorKind::UnexpectedEof.into()),
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(error),
             }
         }
+    }
+}
+
+#[cfg(windows)]
+mod signal_impl {
+    //! Console ctrl events, reported by a handler as a number on an event.
+
+    use std::io;
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::Console::{
+        CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, SetConsoleCtrlHandler,
+    };
+    use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
+
+    use super::Signals;
+
+    static WAKE_EVENT: AtomicI32 = AtomicI32::new(0);
+    static RECEIVED: AtomicI32 = AtomicI32::new(0);
+
+    extern "system" fn report_ctrl(ctrl: u32) -> i32 {
+        let code = match ctrl {
+            CTRL_C_EVENT => 2,      // SIGINT
+            CTRL_BREAK_EVENT => 20, // reported like a break signal
+            CTRL_CLOSE_EVENT => 15, // SIGTERM
+            _ => 15,
+        };
+        RECEIVED.store(code, Ordering::SeqCst);
+        // SAFETY: the event handle was installed before any handler can run.
+        unsafe { SetEvent(WAKE_EVENT.load(Ordering::SeqCst) as HANDLE) };
+        // Let later handlers (close, logoff) run; this process exits through
+        // its own shutdown path after the wait returns.
+        0
+    }
+
+    pub(super) fn install() -> Result<Signals, String> {
+        // SAFETY: an unnamed manual-reset event.
+        let event = unsafe { CreateEventW(std::ptr::null_mut(), 1, 0, std::ptr::null()) };
+        if event.is_null() || event == -1isize as HANDLE {
+            return Err(format!(
+                "cannot create the stop event: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        WAKE_EVENT.store(event as i32, Ordering::SeqCst);
+        // SAFETY: the handler is a plain function pointer with no captures.
+        if unsafe { SetConsoleCtrlHandler(Some(report_ctrl), 1) } == 0 {
+            return Err(format!(
+                "cannot install the ctrl handler: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        Ok(Signals {})
+    }
+
+    /// Blocks until a ctrl event arrives, or until the stop file named by
+    /// `RHO_CORE_STOP_FILE` appears (a graceful stop for processes on other
+    /// consoles, which console events cannot reach). Returns its number.
+    pub(super) fn wait(_signals: &Signals) -> io::Result<i32> {
+        let stop_file = std::env::var_os("RHO_CORE_STOP_FILE");
+        loop {
+            if let Some(path) = &stop_file
+                && std::path::Path::new(path).exists()
+            {
+                return Ok(15);
+            }
+            // SAFETY: a valid event handle stored at install time.
+            let outcome =
+                unsafe { WaitForSingleObject(WAKE_EVENT.load(Ordering::SeqCst) as HANDLE, 100) };
+            if outcome == 0 {
+                // WAIT_OBJECT_0
+                let code = RECEIVED.load(Ordering::SeqCst);
+                if code != 0 {
+                    return Ok(code);
+                }
+            }
+        }
+    }
+}
+
+impl Signals {
+    fn install() -> Result<Self, String> {
+        signal_impl::install()
+    }
+    fn wait(&self) -> io::Result<i32> {
+        signal_impl::wait(self)
     }
 }
 

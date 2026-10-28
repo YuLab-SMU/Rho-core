@@ -3,7 +3,6 @@
 
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -11,6 +10,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::Args;
+use crate::ipc::IpcStream;
 use crate::wire::{self, Greeting, Line, Request, WireStream};
 
 const EXIT_ERROR: u8 = 1;
@@ -282,7 +282,7 @@ fn exchange(
             failure(kind, format!("{message}; nothing was sent")),
         )
     };
-    let stream = UnixStream::connect(socket).map_err(|e| {
+    let mut stream = IpcStream::connect(socket).map_err(|e| {
         not_delivered(
             "host_unavailable",
             format!("no host is listening at `{}` ({e})", socket.display()),

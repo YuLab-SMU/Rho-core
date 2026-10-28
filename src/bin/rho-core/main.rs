@@ -5,6 +5,12 @@
 
 mod client;
 mod host;
+#[cfg(unix)]
+#[path = "ipc_unix.rs"]
+mod ipc;
+#[cfg(windows)]
+#[path = "ipc_windows.rs"]
+mod ipc;
 mod wire;
 
 use std::collections::VecDeque;

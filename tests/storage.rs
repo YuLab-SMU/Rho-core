@@ -27,7 +27,7 @@ impl Fixture {
         let project = tmp.path().join("project");
         fs::create_dir(&project).unwrap();
         let config = CoreConfig::new(&project, tmp.path().join("state"))
-            .executor(Executor::new("sh", "/bin/sh"));
+            .executor(Executor::new("sh", rho_core::os::fixture_sh_program()));
         let core = Core::open(config.clone()).unwrap();
         let db = Connection::open(core.capability().state_dir.join("core.sqlite3")).unwrap();
         Self {
@@ -508,20 +508,26 @@ fn corrupt_metadata_does_not_prevent_shutdown_from_confirming_owned_process_stop
     let ready = fx._tmp.path().join("ready");
     let release = fx._tmp.path().join("release");
     for path in [&ready, &release] {
-        support::fifo(path);
+        support::gate(path);
     }
-    let mut request = request(
-        "owned",
-        "trap '' TERM\necho ready > \"$1\"\nread line < \"$2\"\n",
-    );
+    let script = gate_script();
+    let mut request = request("owned", &script);
     request.args = vec![ready.display().to_string(), release.display().to_string()];
     let submitted = core.submit(CALLER, request).unwrap();
     let pid = match submitted.run.status {
         RunStatus::Running { pid, .. } => pid,
         ref status => panic!("{status:?}"),
     };
+    let ready_path = ready.clone();
     let started = support::within(PATIENCE, "owned process start", move || {
-        fs::read_to_string(ready).unwrap()
+        loop {
+            if let Ok(text) = fs::read_to_string(&ready_path)
+                && !text.is_empty()
+            {
+                return text;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     });
     assert_eq!(started, "ready\n");
     fx.db
@@ -530,6 +536,18 @@ fn corrupt_metadata_does_not_prevent_shutdown_from_confirming_owned_process_stop
     let report = core.shutdown();
     assert_eq!(report.stopped, vec![submitted.run.run_id]);
     assert!(report.not_confirmed.is_empty());
-    // SAFETY: signal 0 only observes existence; no process is signalled.
-    assert_ne!(unsafe { libc::kill(pid as i32, 0) }, 0);
+    // Signal 0 only observes existence; no process is signalled.
+    support::wait_pid_absent(pid, PATIENCE);
+}
+
+/// A run that ignores TERM, signals `$1` when started and blocks on `$2`.
+fn gate_script() -> String {
+    #[cfg(unix)]
+    {
+        "trap '' TERM\necho ready > \"$1\"\nread line < \"$2\"\n".to_owned()
+    }
+    #[cfg(windows)]
+    {
+        "trap '' TERM\necho ready > \"$1\"\nwhile [ ! -s \"$2\" ]; do sleep 0.05; done\n".to_owned()
+    }
 }

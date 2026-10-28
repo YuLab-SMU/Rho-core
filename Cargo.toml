@@ -13,14 +13,36 @@ publish = false
 fault-injection = []
 
 [dependencies]
-libc = "0.2"
 rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 tempfile = "3"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_System_Pipes",
+    "Win32_System_SystemInformation",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_System_IO",
+    "Win32_System_Console",
+] }
+
 [dev-dependencies]
 # Enables the crash points for this crate's own tests and examples only.
 rho-core = { path = ".", features = ["fault-injection"] }
 rusqlite = { version = "0.40.2", features = ["backup"] }
+
+[target."cfg(windows)".dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
