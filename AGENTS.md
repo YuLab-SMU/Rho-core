@@ -8,17 +8,20 @@ work. The contracts describe what is built: [managed runs](docs/MANAGED-RUN.md),
 [activity observations](docs/ACTIVITY.md). Observing an external action does not make
 it a managed run.
 
-## Fixed boundaries
+## Execution choice and protected facts
 
-These protect callers' work and the truth of what is reported. They are not open to
-experiment; the reasons are in [Architecture](docs/ARCHITECTURE.md#固定的边界).
+Agents normally use their native tools. Core is optional, selected for a concrete
+execution or observation need. Dependency direction and where request identities
+are minted are reviewable implementation choices, not universal requirements.
+Protect existing accepted work and the truth of what is reported; see
+[Architecture](docs/ARCHITECTURE.md#固定的边界).
 
-- Core owns its programmatic boundary, the runs it accepts and the activity it
-  receives. Protocol edges, Rho-plugins and the Rho application depend on Core; Core
-  does not depend on protocol types, client behavior, plugins, models or sibling
-  sources. Agents may use existing CLIs, SDKs and MCP servers directly; nothing has
-  to be registered or wrapped as a Rho plugin. Domain semantics stay with their owners.
-- Callers hold request identities. A duplicate, including a concurrent one, returns
+- Core owns the runs it accepts and the activity it receives. Agents use existing
+  CLIs, SDKs and MCP servers directly; nothing has to be registered or wrapped as
+  a Rho plugin. Current dependency structure is documented, not imposed on every
+  native tool or future implementation. Domain semantics stay with their owners.
+- Existing managed requests keep their identities and guarantees. In the current
+  API callers hold those identities. A duplicate, including a concurrent one, returns
   the original acceptance; changed content under the same identity is refused. A
   lost reply, timeout, restart or unreadable record never authorizes replay or a
   new identity.
