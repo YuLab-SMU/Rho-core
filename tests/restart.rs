@@ -34,9 +34,11 @@ read line < "$2"
 echo "released:$line" > released.txt
 echo "released:$line"
 "#;
-/// The Windows gate is a file; the script polls it and reads the line.
+/// The Windows gate is a file; the script polls it and reads the line. It logs
+/// its shell's Windows pid (`/proc/$$`; `/proc/self` in a command substitution
+/// names the `cat` that reads it).
 #[cfg(windows)]
-const GATED: &str = r#"echo $(cat /proc/self/winpid) >> dispatches.log
+const GATED: &str = r#"echo $(cat /proc/$$/winpid) >> dispatches.log
 echo started > "$1"
 while [ ! -s "$2" ]; do sleep 0.05; done
 line=$(cat "$2")
@@ -723,7 +725,7 @@ fn a_group_member_that_outlives_the_main_process_keeps_the_record() {
     #[cfg(windows)]
     fs::write(
         ex.paths.root.join("task.code"),
-        "echo $(cat /proc/self/winpid) >> dispatches.log\n\
+        "echo $(cat /proc/$$/winpid) >> dispatches.log\n\
          (while [ ! -s member.gate ]; do sleep 0.05; done; echo member > member.txt) >/dev/null 2>&1 &\n\
          echo started > \"$1\"\n\
          while [ ! -s \"$2\" ]; do sleep 0.05; done\n",

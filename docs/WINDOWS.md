@@ -44,9 +44,13 @@
 - 客户端协议不变（greeting → 请求行 → 回复行）。
 - 对端身份检查：宿主用 `GetNamedPipeClientProcessId` 打开客户端进程，比较其
   token user SID 与自身，等价于 Unix 的 peer-uid 检查。
-- 宿主的优雅停止：SIGTERM/SIGINT/SIGHUP 在 Windows 上对应控制台 ctrl 事件
-  （Ctrl-C / Ctrl-Break / 关闭）。控制台事件无法到达其他控制台的进程；测试夹具
-  另设 `RHO_CORE_STOP_FILE`——该文件出现即视为 SIGTERM（仅测试使用）。
+- 宿主的停止：处理函数登记控制台 ctrl 事件（Ctrl-C / Ctrl-Break / 关闭），对应
+  SIGINT/SIGTERM，但它返回 0，于是系统接着调用默认处理，进程在关闭路径打印
+  `shutdown` 之前就结束。实测 `c3dbeca` 的宿主收到 Ctrl-Break 后以 `0xC000013A` 退出、
+  没有停止报告；以无窗口控制台启动时，实测宿主收不到 Ctrl-C。按顺序停止并
+  报告的唯一方式是 `RHO_CORE_STOP_FILE`：该文件出现即视为 SIGTERM（每 100 ms 检查）。
+  测试夹具用它，Rho 在 Windows 上也用它停止自己启动的宿主（见
+  [CORE-20261101-02](work/CORE-20261101-02.md)）。
 - 命名管道是内核对象，宿主死亡后不留下文件系统残骸；Unix socket 文件的清理
   步骤在 Windows 上不存在。
 
@@ -72,5 +76,7 @@
   不可观测；测试按平台分别断言。
 - 命令行长度上限 32 KiB（Unix 无此限制）；涉及超长参数的存储回滚测试使用
   24 KiB 参数压满页数达到同一效果。
-- MSYS sh 会 re-exec：Core 记录的 spawn pid 是最初的 sh.exe 包装进程，它等待
-  整个脚本进程树结束；测试里的 pid 探测以该包装进程为准。
+- 测试夹具脚本以 `/proc/$$/winpid` 记录自己的 Windows pid，它就是 Core 派发的
+  sh.exe，与 Core 报告的 pid 相同。命令替换里的 `/proc/self` 指向读取它的 `cat`，
+  此前的夹具因此记下了已退出的 pid，误以为 MSYS sh 会 re-exec（见
+  [CORE-20261101-02](work/CORE-20261101-02.md)）。

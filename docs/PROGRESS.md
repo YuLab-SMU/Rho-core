@@ -5,6 +5,10 @@
 
 ## 当前重点
 
+2026-11-01（+08:00）：`c3dbeca` 在 Windows MSVC 上复验通过，Core 未改；修正了 Windows 测试夹具
+记录的 pid。宿主收到 Ctrl-Break 时不经停止报告就结束，Rho 改用 `RHO_CORE_STOP_FILE` 停止
+自己启动的宿主，见 [CORE-20261101-02](work/CORE-20261101-02.md)。
+
 2026-11-01：Windows 移植后的 Unix 构建与宿主修复，供 Rho 在一个包里放 macOS 与 Linux
 的同一提交产物；执行语义按移植前恢复，见 [CORE-20261101-01](work/CORE-20261101-01.md)。
 
@@ -40,7 +44,9 @@ Agent 的选定活动，Rho-plugins 的适配器从 Claude Code 与 dsh 的原�
   [Windows 支持](WINDOWS.md)。该移植在 Unix 上不能编译，宿主一启动就退出；修复后
   2026-11-01 在 macOS 26.7.2（arm64）、Debian 12 arm64 与 Ubuntu 25.04 amd64（Rosetta）上
   依次通过格式、Clippy、81 项回归与示例，Linux 用静态链接的 musl 目标
-  （[记录](work/CORE-20261101-01.md)）。Linux 平台脚本的
+  （[记录](work/CORE-20261101-01.md)）。同日 `c3dbeca` 在 Windows 11 x86-64（MSVC）上以 LF 检出与
+  `CARGO_PROFILE_DEV_DEBUG=0` 依次通过格式、Clippy、79 项回归与示例；夹具修正后 Windows 也比对
+  记录的 pid（[记录](work/CORE-20261101-02.md)）。Linux 平台脚本的
   四个入口都实跑过：跨 UID、局部启动标识与 PID 命名空间变化、真实内核重启
   （[Linux 记录](work/CORE-20261011-03.md)）。macOS 真实跨 UID 拒绝；独立 Debian 13 guest
   真实内核 panic 与虚拟断电后，原身份与完整、部分输出都保留且不重派
@@ -62,6 +68,10 @@ Agent 的选定活动，Rho-plugins 的适配器从 Claude Code 与 dsh 的原�
 - **Rosetta 下的 x86_64 偶发整进程卡住。** `managed_run` 测试并发反复运行时约 1–2.5% 卡住，
   移植前的 `4f5bed8` 同样出现，与 libc 无关；原生 arm64 的 macOS 与 Linux 没有出现。
   真实 x86_64 硬件未验证（[记录](work/CORE-20261101-01.md)）。
+- **Windows 上如何停止和找到宿主。** ctrl 处理返回 0，Ctrl-Break 不经停止报告就结束宿主；
+  按顺序停止只有 `RHO_CORE_STOP_FILE`，文档仍称测试用，Rho 已依赖它。是否定为正式接口或改
+  ctrl 处理（改变二进制）待定。客户端只接受管道名，不映射 `<state_dir>/host.sock`。
+  回归在 `%TEMP%` 留下空目录骨架（[记录](work/CORE-20261101-02.md)）。
 
 - **活动流继续服务独立的观察消费者。** Rho 已接入 `agent.activity.read/capture/outputs`；
   不要求外部动作成为受管运行。进一步格式变动仍由真实消费者决定。
@@ -89,6 +99,7 @@ Agent 的选定活动，Rho-plugins 的适配器从 Claude Code 与 dsh 的原�
 
 | 任务 | 内容与结果 | 时间 |
 | --- | --- | --- |
+| [CORE-20261101-02](work/CORE-20261101-02.md) | `c3dbeca` 的 Windows MSVC 复验；Windows 测试夹具记录 `cat` 而非脚本自身的 pid，修正后无残留进程并比对 pid；Ctrl-Break 不经停止报告就结束宿主 | 2026-11-01（+08:00），见记录 |
 | [CORE-20261101-01](work/CORE-20261101-01.md) | Windows 移植后的 Unix 构建、宿主信号与对端检查修复；macOS、Linux arm64/x86_64 复验与 Rosetta 卡住对照 | 2026-11-01，见记录 |
 | [CORE-20261029-01](work/CORE-20261029-01.md) | 原生工具正常使用，Core 按需选用；区分可复核机制与已有工作、诚实事实；执行实现未改 | 2026-10-29，见记录 |
 | [CORE-20261025-02](work/CORE-20261025-02.md) | 用结果驱动的方法替换预设规则：重写工作约束、README、架构、工程方法与进度，撤回四份文档，修正契约中的过时说明 | 2026-10-25，见记录 |

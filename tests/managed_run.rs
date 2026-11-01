@@ -32,8 +32,11 @@ n="$1"; i=1; : > numbers.txt
 while [ "$i" -le "$n" ]; do echo "$i" >> numbers.txt; i=$((i + 1)); done
 awk '{ s += $1 } END { print "sum=" s }' numbers.txt
 "#;
+/// On Windows the scripts log their shell's Windows pid, the process Core
+/// spawned: `/proc/$$`, since `/proc/self` in a command substitution names the
+/// `cat` that reads it.
 #[cfg(windows)]
-const SUM: &str = r#"echo $(cat /proc/self/winpid) >> dispatches.log
+const SUM: &str = r#"echo $(cat /proc/$$/winpid) >> dispatches.log
 n="$1"; i=1; : > numbers.txt
 while [ "$i" -le "$n" ]; do echo "$i" >> numbers.txt; i=$((i + 1)); done
 awk '{ s += $1 } END { print "sum=" s }' numbers.txt
@@ -45,7 +48,7 @@ printf '%s\n' "$@" | sort | uniq -c | awk '{ print $2 "\t" $1 }' > counts.tsv
 cat counts.tsv
 "#;
 #[cfg(windows)]
-const GROUP_COUNT: &str = r#"echo $(cat /proc/self/winpid) >> dispatches.log
+const GROUP_COUNT: &str = r#"echo $(cat /proc/$$/winpid) >> dispatches.log
 printf '%s\n' "$@" | awk '{ c[$0]++ } END { for (k in c) print k "\t" c[k] }' > counts.tsv
 cat counts.tsv
 "#;
@@ -59,7 +62,7 @@ echo "released:$line"
 "#;
 /// The Windows gate is a file the script polls; `cat` reads the line.
 #[cfg(windows)]
-const GATED: &str = r#"echo $(cat /proc/self/winpid) >> dispatches.log
+const GATED: &str = r#"echo $(cat /proc/$$/winpid) >> dispatches.log
 echo started > "$1"
 while [ ! -s "$2" ]; do sleep 0.05; done
 line=$(cat "$2")
@@ -78,7 +81,7 @@ read line < "$2"
 /// child. The pid recorded is the MSYS shell's winpid, so the job claim is
 /// checked through the child's own winpid file.
 #[cfg(windows)]
-const GATED_WITH_CHILD: &str = r#"echo $(cat /proc/self/winpid) >> dispatches.log
+const GATED_WITH_CHILD: &str = r#"echo $(cat /proc/$$/winpid) >> dispatches.log
 sleep 300 &
 BGPID=$!
 while [ -z "$BGWIN" ] && [ -n "$BGPID" ]; do BGWIN=$(cat /proc/$BGPID/winpid 2>/dev/null); done
@@ -120,14 +123,6 @@ fn fixture_with(limits: Limits, executor: Executor) -> Fixture {
 fn request(id: &str, code: &str, args: &[&str]) -> RunRequest {
     let args = args.iter().map(|arg| arg.to_string()).collect();
     support::request(id, "sh", "work", code, args)
-}
-
-/// Whether the fixture scripts' logged process ids must equal the pids Core
-/// reports. On Unix the shell is the spawned process itself, so they match.
-/// MSYS sh re-execs on Windows, so the logged winpid differs from the spawn
-/// pid; only the dispatch count is the shared fact there.
-fn logged_pids_match_core_pids() -> bool {
-    cfg!(unix)
 }
 
 fn dispatches(dir: &Path) -> Vec<String> {
@@ -301,11 +296,7 @@ fn two_task_scripts_share_one_capability_and_return_real_products() {
     let mut logged = dispatches(&fx.work);
     expected.sort();
     logged.sort();
-    if logged_pids_match_core_pids() {
-        assert_eq!(logged, expected);
-    } else {
-        assert_eq!(logged.len(), 2, "one dispatch per accepted run: {logged:?}");
-    }
+    assert_eq!(logged, expected);
 }
 
 #[test]
@@ -385,9 +376,7 @@ fn concurrent_duplicates_share_one_acceptance_and_one_dispatch() {
     gate.open("once");
     let view = finished(&fx.core, "dup");
     assert_eq!(dispatches(&fx.work).len(), 1);
-    if logged_pids_match_core_pids() {
-        assert_eq!(dispatches(&fx.work), vec![pid_of(&view).to_string()]);
-    }
+    assert_eq!(dispatches(&fx.work), vec![pid_of(&view).to_string()]);
 
     // A sequential retry after completion still returns the original.
     let again = fx.core.submit(CALLER, gated("dup", &gate, GATED)).unwrap();
