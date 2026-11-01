@@ -1,9 +1,12 @@
 # Rho Core 进度
 
-更新：2026-10-29，时区 `America/New_York`。阶段的含义见[工程方法](ENGINEERING.md#阶段)。
+更新：2026-11-01，时区 `America/New_York`。阶段的含义见[工程方法](ENGINEERING.md#阶段)。
 详细动作、时间与证据在各任务记录里，旧摘要由 Git 保留。
 
 ## 当前重点
+
+2026-11-01：Windows 移植后的 Unix 构建与宿主修复，供 Rho 在一个包里放 macOS 与 Linux
+的同一提交产物；执行语义按移植前恢复，见 [CORE-20261101-01](work/CORE-20261101-01.md)。
 
 2026-10-29：按用户决定明确原生工具为正常路径，Core 按需选用。依赖方向与调用方生成
 身份不再列为不可复核的架构要求；已有身份、未知结果和活动观测仍保留。仅修改说明与
@@ -34,7 +37,10 @@ Agent 的选定活动，Rho-plugins 的适配器从 Claude Code 与 dsh 的原�
   依次通过格式、Clippy、当时完整的 73 项回归与 `managed_run` 示例。Windows 11
   x86-64（10.0.26200，MSVC，Rust 1.97.0）补充移植后于 2026-10-28 依次通过格式、
   Clippy、全部 79 项回归与 `managed_run` 示例；平台映射与剩余差异见
-  [Windows 支持](WINDOWS.md)。Linux 平台脚本的
+  [Windows 支持](WINDOWS.md)。该移植在 Unix 上不能编译，宿主一启动就退出；修复后
+  2026-11-01 在 macOS 26.7.2（arm64）、Debian 12 arm64 与 Ubuntu 25.04 amd64（Rosetta）上
+  依次通过格式、Clippy、81 项回归与示例，Linux 用静态链接的 musl 目标
+  （[记录](work/CORE-20261101-01.md)）。Linux 平台脚本的
   四个入口都实跑过：跨 UID、局部启动标识与 PID 命名空间变化、真实内核重启
   （[Linux 记录](work/CORE-20261011-03.md)）。macOS 真实跨 UID 拒绝；独立 Debian 13 guest
   真实内核 panic 与虚拟断电后，原身份与完整、部分输出都保留且不重派
@@ -52,6 +58,10 @@ Agent 的选定活动，Rho-plugins 的适配器从 Claude Code 与 dsh 的原�
   消失；活动观测在 Linux 上的行为；开放式模型语义质量。
 
 ## 开放问题
+
+- **Rosetta 下的 x86_64 偶发整进程卡住。** `managed_run` 测试并发反复运行时约 1–2.5% 卡住，
+  移植前的 `4f5bed8` 同样出现，与 libc 无关；原生 arm64 的 macOS 与 Linux 没有出现。
+  真实 x86_64 硬件未验证（[记录](work/CORE-20261101-01.md)）。
 
 - **活动流继续服务独立的观察消费者。** Rho 已接入 `agent.activity.read/capture/outputs`；
   不要求外部动作成为受管运行。进一步格式变动仍由真实消费者决定。
@@ -79,6 +89,7 @@ Agent 的选定活动，Rho-plugins 的适配器从 Claude Code 与 dsh 的原�
 
 | 任务 | 内容与结果 | 时间 |
 | --- | --- | --- |
+| [CORE-20261101-01](work/CORE-20261101-01.md) | Windows 移植后的 Unix 构建、宿主信号与对端检查修复；macOS、Linux arm64/x86_64 复验与 Rosetta 卡住对照 | 2026-11-01，见记录 |
 | [CORE-20261029-01](work/CORE-20261029-01.md) | 原生工具正常使用，Core 按需选用；区分可复核机制与已有工作、诚实事实；执行实现未改 | 2026-10-29，见记录 |
 | [CORE-20261025-02](work/CORE-20261025-02.md) | 用结果驱动的方法替换预设规则：重写工作约束、README、架构、工程方法与进度，撤回四份文档，修正契约中的过时说明 | 2026-10-25，见记录 |
 | [CORE-20261025-01](work/CORE-20261025-01.md) | 活动观测：Core 持久边界与插件读取、派生分别交付；macOS 与真实客户端验收 | 2026-10-25 20:09:49–20:31:03；已记录 21 分 14 秒 |

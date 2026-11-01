@@ -4,13 +4,19 @@
 
 use std::fs;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The socket's name inside the host's state directory.
 pub const SOCKET_NAME: &str = "host.sock";
+
+/// The socket the host serves for a state dir: a file inside it.
+pub fn pipe_name(state_dir: &Path) -> PathBuf {
+    state_dir.join(SOCKET_NAME)
+}
 
 /// A blocking duplex stream over one accepted socket.
 pub struct IpcStream {
@@ -35,26 +41,52 @@ impl IpcStream {
 
     /// Peer credential check: only the host's own user may connect.
     pub fn peer_is_own_user(&self) -> Result<(), String> {
-        use std::os::fd::AsRawFd;
         // SAFETY: geteuid has no preconditions.
         let own = unsafe { libc::geteuid() };
-        // SAFETY: a connected socket descriptor and two valid out-pointers.
-        let (uid, _gid) = unsafe {
-            let (mut uid, mut gid) = (0u32, 0u32);
-            if libc::getpeereid(self.stream.as_raw_fd(), &mut uid, &mut gid) != 0 {
-                return Err(format!(
-                    "peer uid is unavailable: {}",
-                    io::Error::last_os_error()
-                ));
-            }
-            (uid, gid)
-        };
-        if uid == own {
-            Ok(())
-        } else {
-            Err(format!("peer uid {uid} is not the host's uid {own}"))
+        match peer_uid(&self.stream) {
+            Ok(uid) if uid == own => Ok(()),
+            Ok(uid) => Err(format!("peer uid {uid} is not the host's uid {own}")),
+            Err(error) => Err(format!("peer uid is unavailable: {error}")),
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn peer_uid(stream: &UnixStream) -> io::Result<libc::uid_t> {
+    let (mut uid, mut gid) = (0, 0);
+    // SAFETY: a connected socket descriptor and two valid out-pointers.
+    if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(uid)
+}
+
+#[cfg(target_os = "linux")]
+fn peer_uid(stream: &UnixStream) -> io::Result<libc::uid_t> {
+    // SAFETY: zeroed ucred is a valid out-parameter of the size passed.
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: a connected socket descriptor and a correctly sized buffer.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut cred as *mut libc::ucred).cast(),
+            &mut len,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(cred.uid)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn peer_uid(_stream: &UnixStream) -> io::Result<libc::uid_t> {
+    Err(io::Error::other(
+        "peer credentials are not implemented here",
+    ))
 }
 
 impl Read for IpcStream {
@@ -90,7 +122,6 @@ impl Write for &IpcStream {
 /// A listening Unix socket.
 pub struct IpcListener {
     listener: UnixListener,
-    path: PathBuf,
 }
 
 impl IpcListener {
@@ -109,10 +140,7 @@ impl IpcListener {
         }
         let listener = UnixListener::bind(path)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-        Ok(Self {
-            listener,
-            path: path.to_path_buf(),
-        })
+        Ok(Self { listener })
     }
 
     /// Accepts one client within `timeout`; `Ok(None)` when the deadline passed.
@@ -142,21 +170,18 @@ impl IpcListener {
     }
 }
 
-impl Drop for IpcListener {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+/// The bound socket file's identity, so a host removes only its own file.
+pub fn socket_identity(path: &Path) -> io::Result<(u64, u64)> {
+    let meta = fs::metadata(path)?;
+    Ok((meta.dev(), meta.ino()))
+}
+
+/// Removes the host's socket file at shutdown, unless the path no longer
+/// names the file this host bound.
+pub fn remove_socket_file(path: &Path, bound: (u64, u64)) {
+    if let Ok(current) = fs::symlink_metadata(path)
+        && (current.dev(), current.ino()) == bound
+    {
+        let _ = fs::remove_file(path);
     }
-}
-
-/// Disconnects and releases a client connection.
-pub fn shutdown_stream(_stream: &IpcStream) {}
-
-/// Removes the socket file, for a host shutting down.
-pub fn remove_socket_file(path: &Path) {
-    let _ = fs::remove_file(path);
-}
-
-/// Whether the socket file exists.
-pub fn socket_exists(path: &Path) -> bool {
-    path.try_exists().unwrap_or(false)
 }

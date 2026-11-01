@@ -112,6 +112,8 @@ impl Fixture {
             socket,
             #[cfg(windows)]
             stop_file: STOP_FILES.with(|files| files.borrow_mut().pop()),
+            #[cfg(unix)]
+            stop_file: None,
         }
     }
 }

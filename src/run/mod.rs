@@ -16,7 +16,7 @@ use crate::store::{self, Fact, OperationStore, Stored};
 use crate::{Limits, fault, os};
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::OpenOptionsExt;
 
 pub(crate) mod platform {
     //! The dispatch and holding of one native process, per platform. Both
@@ -879,10 +879,8 @@ fn probe(dir: &Path) -> io::Result<bool> {
 fn run_present(state: &State, dir: &Path) -> Option<bool> {
     #[cfg(unix)]
     {
-        match probe(dir) {
-            Ok(present) => Some(present),
-            Err(_) => None,
-        }
+        let _ = state;
+        probe(dir).ok()
     }
     #[cfg(windows)]
     {

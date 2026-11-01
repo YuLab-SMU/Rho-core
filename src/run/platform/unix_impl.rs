@@ -11,15 +11,17 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use super::super::{
-    Exit, Limits, POLL_INTERVAL, READ_BUFFER, RunShared, Stream, empty_stream, lock,
+    Exit, Limits, POLL_INTERVAL, RunShared, Stream, StreamInfo, empty_stream, lock,
 };
 use crate::store;
 use crate::{Executor, fault, os};
+
+const READ_BUFFER: usize = store::BLOB_CHUNK;
 
 pub(crate) fn dispatch(
     run: &Arc<RunShared>,

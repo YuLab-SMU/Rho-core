@@ -49,8 +49,6 @@ mod unix {
     use std::os::fd::RawFd;
     use std::time::Duration;
 
-    use super::nonempty;
-
     /// Reports whether `pid` has exited, leaving it unreaped (`WNOWAIT`).
     pub(crate) fn has_exited(pid: i32) -> io::Result<bool> {
         loop {

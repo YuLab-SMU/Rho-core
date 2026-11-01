@@ -2,8 +2,6 @@
 //! client invocations that submit, wait for, read and cancel them.
 
 use std::io::{self, BufReader, Write};
-#[cfg(unix)]
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -153,6 +151,8 @@ fn serve(options: Options) -> Result<(), String> {
     let capability = core.capability();
     let socket = ipc::pipe_name(&capability.state_dir);
     let listener = listen(&socket)?;
+    #[cfg(unix)]
+    let bound = ipc::socket_identity(&socket).map_err(|e| e.to_string())?;
     let host = Arc::new(Host {
         max_request_bytes: wire::max_request_bytes(&capability.limits),
         core,
@@ -177,8 +177,11 @@ fn serve(options: Options) -> Result<(), String> {
     // A failed signal read stops the host as a signal would; it is reported.
     let signal = signals.wait().map_err(|e| e.to_string());
     host.stopping.store(true, Ordering::SeqCst);
-    // A named pipe vanishes with its server; the accept thread sees stopping
-    // and leaves, and there is no filesystem name to remove.
+    // The accept thread sees stopping and leaves. A named pipe vanishes with
+    // its server; a Unix socket file outlives its listener, so this host
+    // removes its own file before Core shuts down.
+    #[cfg(unix)]
+    ipc::remove_socket_file(&host.socket, bound);
     let report = host.core.shutdown();
     let deadline = Instant::now() + REQUEST_GRACE;
     while host.connections.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
@@ -491,7 +494,7 @@ mod signal_impl {
     //! handler, and the pipe is close-on-exec, so runs start with default handling.
 
     use std::fs;
-    use std::io;
+    use std::io::{self, Read};
     use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
     use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -581,10 +584,10 @@ mod signal_impl {
                 }
             }
         }
-        // SAFETY: adopting the read descriptor this module owns for the
-        // process lifetime; the write end keeps the pipe open.
-        let file = unsafe { fs::File::from(OwnedFd::from_raw_fd(fds[0])) };
-        Ok(Signals { file })
+        // The read end is owned by `Signals`; the write end keeps the pipe open.
+        Ok(Signals {
+            file: fs::File::from(read),
+        })
     }
 
     /// Blocks until a termination signal arrives and returns its number.
