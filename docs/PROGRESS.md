@@ -1,9 +1,14 @@
 # Rho Core 进度
 
-更新：2026-11-01，时区 `America/New_York`。阶段的含义见[工程方法](ENGINEERING.md#阶段)。
+更新：2026-11-02，时区 `America/New_York`。阶段的含义见[工程方法](ENGINEERING.md#阶段)。
 详细动作、时间与证据在各任务记录里，旧摘要由 Git 保留。
 
 ## 当前重点
+
+2026-11-02（+08:00）：Windows 的输出泵把每次写入单独提交，逐行写 2000 行的运行在 GitHub 的
+windows-2022 上要 20–35 s，期间查询可等 20 s，逐行输出还会耗尽块数上限。`5333181` 把排队的字节
+合在一起提交，每次至多一个 blob 块；同一运行降到 0.32 s，新回归在旧代码上失败、新代码上通过，见
+[CORE-20261102-01](work/CORE-20261102-01.md)。Windows 只跑了这一项回归，全部回归未在 Windows 重跑。
 
 2026-11-01（+08:00）：`c3dbeca` 在 Windows MSVC 上复验通过，Core 未改；修正了 Windows 测试夹具
 记录的 pid。宿主收到 Ctrl-Break 时不经停止报告就结束，Rho 改用 `RHO_CORE_STOP_FILE` 停止
