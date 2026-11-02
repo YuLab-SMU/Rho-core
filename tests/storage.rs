@@ -389,6 +389,35 @@ fn output_chunk_limit_bounds_metadata_and_reports_the_exhausted_resource() {
 }
 
 #[test]
+fn many_short_writes_are_retained_together_within_the_chunk_limit() {
+    // On Windows the reader receives each write as its own read; the writes
+    // queued between commits are kept together, so line-by-line output stays
+    // within the chunk limit and is retained whole.
+    let fx = Fixture::new();
+    let mut config = fx.config.clone();
+    drop(fx.core);
+    config.limits.max_output_chunks = 512;
+    let core = Core::open(config).unwrap();
+    core.submit(
+        CALLER,
+        request(
+            "lines",
+            "perl -e '$| = 1; print \"line $_\\n\" for 1..5000'\n",
+        ),
+    )
+    .unwrap();
+    let view = core
+        .wait(CALLER, "lines", Duration::from_secs(120))
+        .unwrap();
+    assert!(view.is_terminal());
+    let written: u64 = (1..=5000).map(|n| format!("line {n}\n").len() as u64).sum();
+    assert_eq!(view.stdout.observed_bytes, written);
+    assert_eq!(view.stdout.retention_error, None);
+    assert_eq!(view.stdout.retained_bytes, written);
+    assert!(view.operation.outputs.stdout.blobs.len() <= 512);
+}
+
+#[test]
 fn callers_can_discover_their_original_operations_after_restart() {
     let fx = Fixture::new();
     fx.run("one");

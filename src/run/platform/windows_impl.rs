@@ -429,20 +429,30 @@ impl Pump {
         self.reader.is_none()
     }
 
-    /// Drains pending events and commits them as output facts.
+    /// Drains pending events and commits them as output facts. The reader gets
+    /// each write of the process as its own read, so the bytes queued since the
+    /// last drain are committed together, at most one blob chunk at a time, as a
+    /// Unix read of the ready pipe takes them. Committing every write alone made
+    /// a run of 2000 short lines take 20 to 35 s and spent the chunk limit.
     fn read_once(&mut self) -> bool {
         let mut changed = false;
+        let mut pending = Vec::new();
         while let Ok(event) = self.events.try_recv() {
             changed = true;
             match event {
                 PumpEvent::Bytes(bytes) => {
-                    self.info = self.run.record_output(self.stream, &bytes, false, None);
+                    if pending.len() + bytes.len() > store::BLOB_CHUNK {
+                        self.commit(&mut pending);
+                    }
+                    pending.extend_from_slice(&bytes);
                 }
                 PumpEvent::Eof => {
+                    self.commit(&mut pending);
                     self.info = self.run.record_output(self.stream, &[], true, None);
                     self.reader = None;
                 }
                 PumpEvent::Failed(error) => {
+                    self.commit(&mut pending);
                     self.info = self.run.record_output(
                         self.stream,
                         &[],
@@ -453,6 +463,14 @@ impl Pump {
                 }
             }
         }
+        self.commit(&mut pending);
         changed
+    }
+
+    fn commit(&mut self, pending: &mut Vec<u8>) {
+        if !pending.is_empty() {
+            self.info = self.run.record_output(self.stream, pending, false, None);
+            pending.clear();
+        }
     }
 }
