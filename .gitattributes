@@ -1,6 +1,10 @@
 # Vendored file and patch checksums must survive Windows checkouts unchanged.
 /vendor/jet-core/** text eol=lf
 /patches/jet/** text eol=lf
+# Compiled into the binary with include_str!, byte for byte: a CRLF checkout (Git for Windows'
+# default core.autocrlf=true) would build a Core whose contract text differs from CI's.
+/docs/ACTIVITY.md text eol=lf
+/docs/MANAGED-RUN.md text eol=lf
 # Unified diffs use a single space for an empty context line. Replay still checks
 # added source lines with git apply --whitespace=error-all.
 /patches/jet/*.patch whitespace=-blank-at-eol
