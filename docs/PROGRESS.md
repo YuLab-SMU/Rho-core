@@ -1,9 +1,14 @@
 # Rho Core 进度
 
-更新：2026-11-02，时区 `America/New_York`。阶段的含义见[工程方法](ENGINEERING.md#阶段)。
+更新：2026-11-07，时区 `America/New_York`。阶段的含义见[工程方法](ENGINEERING.md#阶段)。
 详细动作、时间与证据在各任务记录里，旧摘要由 Git 保留。
 
 ## 当前重点
+
+2026-11-07（+08:00）：在 Windows 上按 Git 默认设置（`core.autocrlf=true`）克隆后，编进二进制的
+`docs/ACTIVITY.md` 与 `docs/MANAGED-RUN.md` 以 CRLF 检出，构建出的 Core 契约文本与 CI 的不同。
+`8ef933a` 把这两个文件设为 `text eol=lf`，新克隆的构建嵌入 LF；源码与契约未变，见
+[CORE-20261107-01](work/CORE-20261107-01.md)。
 
 2026-11-02（+08:00）：Windows 的输出泵把每次写入单独提交，逐行写 2000 行的运行在 GitHub 的
 windows-2022 上要 20–35 s，期间查询可等 20 s，逐行输出还会耗尽块数上限。`5333181` 把排队的字节
