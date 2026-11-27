@@ -1,0 +1,149 @@
+# Builds the four platform rho-core binaries for a Rho-core commit and publishes them as a
+# GitHub Release tagged core-<commit-sha>, with a SHA256SUMS manifest. Downstream consumers
+# (such as Rho's CI) download the immutable release assets directly instead of rebuilding Rust.
+name: Build binaries
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**'
+      - '!docs/**'
+      - 'docs/MANAGED-RUN.md'
+      - 'docs/ACTIVITY.md'
+      - '!AGENTS.md'
+      - '!README.md'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Commit SHA or ref to build (defaults to HEAD of this branch)'
+        required: false
+        type: string
+      force:
+        description: 'Rebuild and overwrite assets even if the release already exists'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-binaries-${{ inputs.ref || github.sha }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  resolve:
+    name: Resolve target commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      short: ${{ steps.resolve.outputs.short }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      skip: ${{ steps.resolve.outputs.skip }}
+    steps:
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_REF: ${{ inputs.ref }}
+          FORCE: ${{ inputs.force == true }}
+        run: |
+          ref="${INPUT_REF:-$GITHUB_SHA}"
+          sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$ref" --jq '.sha')"
+          short="${sha:0:7}"
+          tag="core-$sha"
+          skip=false
+          if [ "$FORCE" != "true" ] && gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            count="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name] | map(select(. == "rho-core-darwin-arm64" or . == "rho-core-linux-x64" or . == "rho-core-linux-arm64" or . == "rho-core-win32-x64.exe" or . == "SHA256SUMS")) | length')"
+            if [ "$count" = "5" ]; then
+              echo "Release $tag already has all 5 assets; skipping build."
+              skip=true
+            fi
+          fi
+          {
+            echo "sha=$sha"
+            echo "short=$short"
+            echo "tag=$tag"
+            echo "skip=$skip"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: resolve
+    if: needs.resolve.outputs.skip != 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: darwin-arm64, os: macos-15, target: aarch64-apple-darwin, exe: rho-core, asset: rho-core-darwin-arm64 }
+          - { platform: linux-x64, os: ubuntu-24.04, target: x86_64-unknown-linux-musl, exe: rho-core, asset: rho-core-linux-x64 }
+          - { platform: linux-arm64, os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, exe: rho-core, asset: rho-core-linux-arm64 }
+          - { platform: win32-x64, os: windows-2022, target: x86_64-pc-windows-msvc, exe: rho-core.exe, asset: rho-core-win32-x64.exe }
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+      - name: Build
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+          rustc --version && cargo --version
+          cargo build --locked --target ${{ matrix.target }}
+          mkdir -p out
+          cp "target/${{ matrix.target }}/debug/${{ matrix.exe }}" "out/${{ matrix.asset }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.asset }}
+          path: out/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [resolve, build]
+    if: needs.resolve.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: rho-core-*
+          merge-multiple: true
+          path: dist
+      - name: Generate SHA256SUMS and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          SHORT: ${{ needs.resolve.outputs.short }}
+        run: |
+          cd dist
+          ls -la
+          sha256sum rho-core-darwin-arm64 rho-core-linux-arm64 rho-core-linux-x64 rho-core-win32-x64.exe > SHA256SUMS
+          cat SHA256SUMS
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+              rho-core-darwin-arm64 rho-core-linux-arm64 rho-core-linux-x64 rho-core-win32-x64.exe SHA256SUMS
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$SHA" \
+              --title "Core $SHORT" \
+              --notes "Prebuilt \`rho-core\` binaries for commit \`$SHA\` (dev profile without debug info, static musl on Linux)." \
+              rho-core-darwin-arm64 rho-core-linux-arm64 rho-core-linux-x64 rho-core-win32-x64.exe SHA256SUMS
+          fi
